@@ -2,7 +2,7 @@ version: 1
 
 scan:
   default_rules: null
-  output_directory: "./muleguard-report"
+  output_directory: "./runnerguard-report"
   include_tests: false
   continue_on_parse_error: true
   fail_on: "error"
@@ -31,7 +31,7 @@ ai:
   base_url: null
   model: null
   api_key:
-    env: "MULEGUARD_AI_API_KEY"
+    env: "RUNNERGUARD_AI_API_KEY"
   timeout_seconds: 60
   max_retries: 2
   max_input_characters: 120000

@@ -1,0 +1,203 @@
+{
+  "$schema": "../schemas/rule-set.schema.json",
+  "schema_version": "1.0",
+  "id": "runnerguard-basic-rules",
+  "name": "RunnerGuard Basic Rules",
+  "version": "1.0.0",
+  "description": "A small deterministic rule set for initial development and testing.",
+  "defaults": {
+    "enabled": true,
+    "severity": "warning"
+  },
+  "rules": [
+    {
+      "id": "MULE-PROJ-001",
+      "title": "Required Mule project files must exist",
+      "description": "A Mule application should contain its main project descriptor files and source directory.",
+      "severity": "error",
+      "enabled": true,
+      "tags": [
+        "project",
+        "structure"
+      ],
+      "target": {
+        "entity": [
+          "project"
+        ]
+      },
+      "assert": {
+        "fact": "project.required-files",
+        "op": "required-files-exist",
+        "value": [
+          "pom.xml",
+          "mule-artifact.json",
+          "src/main/mule"
+        ]
+      },
+      "message": "The Mule project is missing one or more required files: {{ actual }}.",
+      "recommendation": "Restore the missing project descriptors or source directory before running validation."
+    },
+    {
+      "id": "MULE-FLOW-001",
+      "title": "Flow and subflow names must use kebab-case",
+      "description": "Consistent names make flow references and reports easier to read.",
+      "severity": "warning",
+      "enabled": true,
+      "tags": [
+        "naming",
+        "maintainability"
+      ],
+      "target": {
+        "entity": [
+          "flow",
+          "subflow"
+        ]
+      },
+      "assert": {
+        "fact": "flow.name",
+        "op": "matches",
+        "value": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+      },
+      "message": "Flow '{{ flow.name }}' does not use kebab-case.",
+      "recommendation": "Use a lower-case name such as 'order-api-flow' or 'validate-order-subflow'."
+    },
+    {
+      "id": "MULE-FLOW-002",
+      "title": "Flow should not contain too many components",
+      "description": "Very large flows are difficult to test, understand, and reuse.",
+      "severity": "warning",
+      "enabled": true,
+      "tags": [
+        "complexity",
+        "maintainability"
+      ],
+      "target": {
+        "entity": [
+          "flow",
+          "subflow"
+        ]
+      },
+      "assert": {
+        "fact": "flow.component-count",
+        "op": "less-than-or-equal",
+        "value": 25
+      },
+      "message": "Flow '{{ flow.name }}' contains {{ actual }} components; the configured maximum is {{ expected }}.",
+      "recommendation": "Extract cohesive processing steps into named subflows."
+    },
+    {
+      "id": "MULE-FLOW-003",
+      "title": "Flow references must resolve",
+      "description": "Every flow-ref must point to an existing flow or subflow.",
+      "severity": "error",
+      "enabled": true,
+      "tags": [
+        "correctness",
+        "reference"
+      ],
+      "target": {
+        "entity": [
+          "flow",
+          "subflow"
+        ]
+      },
+      "assert": {
+        "fact": "flow.flow-refs",
+        "op": "all-references-resolve"
+      },
+      "message": "Flow '{{ flow.name }}' contains unresolved flow references: {{ actual }}.",
+      "recommendation": "Correct the flow-ref name or add the referenced flow/subflow."
+    },
+    {
+      "id": "MULE-FLOW-004",
+      "title": "Executable flow should have an effective error handler",
+      "description": "A source-triggered flow should use either a local or configured default error handler.",
+      "severity": "warning",
+      "enabled": true,
+      "tags": [
+        "reliability",
+        "error-handling"
+      ],
+      "target": {
+        "entity": [
+          "flow"
+        ]
+      },
+      "when": {
+        "fact": "flow.source-component",
+        "op": "exists"
+      },
+      "assert": {
+        "fact": "flow.has-effective-error-handler",
+        "op": "equals",
+        "value": true
+      },
+      "message": "Flow '{{ flow.name }}' has a source but no effective error handler was detected.",
+      "recommendation": "Add a local error-handler or configure a project default error handler."
+    },
+    {
+      "id": "MULE-HTTP-001",
+      "title": "HTTP listener port should use a property placeholder",
+      "description": "Environment-specific connection settings should not be hard-coded.",
+      "severity": "error",
+      "enabled": true,
+      "tags": [
+        "configuration",
+        "security",
+        "http"
+      ],
+      "target": {
+        "entity": [
+          "component"
+        ],
+        "match": {
+          "fact": "component.qualified-name",
+          "op": "equals",
+          "value": "http:listener-connection"
+        }
+      },
+      "when": {
+        "fact": "component.attributes.port",
+        "op": "exists"
+      },
+      "assert": {
+        "fact": "component.attributes.port",
+        "op": "is-placeholder"
+      },
+      "message": "HTTP listener port '{{ actual }}' is hard-coded.",
+      "recommendation": "Use a Mule property placeholder such as '${http.port}'."
+    },
+    {
+      "id": "MULE-LOG-001",
+      "title": "Logger message must not contain obvious secret literals",
+      "description": "Logger messages should not expose passwords, tokens, or API keys.",
+      "severity": "critical",
+      "enabled": true,
+      "tags": [
+        "security",
+        "logging"
+      ],
+      "target": {
+        "entity": [
+          "component"
+        ],
+        "match": {
+          "fact": "component.local-name",
+          "op": "equals",
+          "value": "logger"
+        }
+      },
+      "when": {
+        "fact": "component.attributes.message",
+        "op": "exists"
+      },
+      "assert": {
+        "fact": "component.attributes.message",
+        "op": "not-matches",
+        "value": "(?i)(password|passwd|api[-_ ]?key|access[-_ ]?token|client[-_ ]?secret)\\s*[:=]\\s*[^$#\\[]+"
+      },
+      "message": "Logger message may contain a secret literal.",
+      "recommendation": "Remove sensitive values from logs and log only safe identifiers."
+    }
+  ]
+}
