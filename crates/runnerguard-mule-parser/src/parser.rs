@@ -30,8 +30,25 @@ pub fn parse_project(
         if source_file.kind != SourceFileKind::MuleXml {
             continue;
         }
-        let path = files.root.join(&source_file.path);
-        match read_and_parse(&path, &source_file.path) {
+        // Reject path traversal: the joined path must resolve under files.root.
+        let joined = files.root.join(&source_file.path);
+        let joined = match joined.canonicalize() {
+            Ok(p) => p,
+            Err(_) => joined, // fall back; read errors are surfaced below
+        };
+        let path = match ensure_within_root(&files.root, &joined) {
+            Ok(p) => p,
+            Err(err) => {
+                diagnostics.push(err);
+                if !options.continue_on_parse_error {
+                    return Err(ProjectParseError::TooManyFailures {
+                        count: diagnostics.len(),
+                    });
+                }
+                continue;
+            }
+        };
+        match read_and_parse(&path, &source_file.path, options) {
             Ok(doc) => documents.push(doc),
             Err(err) => {
                 diagnostics.push(err);
@@ -95,9 +112,74 @@ pub fn parse_project(
     })
 }
 
+/// Ensure a joined path stays within the project root. Rejects `..` escapes
+/// and absolute paths that point outside `root`. Returns a diagnostic on
+/// violation rather than panicking. The `Diagnostic` Err is intentionally
+/// large — it carries enough context to surface to operators.
 #[allow(clippy::result_large_err)]
-fn read_and_parse(path: &Path, relative: &str) -> Result<MuleDocument, Diagnostic> {
+fn ensure_within_root(root: &Path, joined: &Path) -> Result<std::path::PathBuf, Diagnostic> {
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let canonical_joined = joined
+        .canonicalize()
+        .unwrap_or_else(|_| joined.to_path_buf());
+    if !canonical_joined.starts_with(&canonical_root) {
+        return Err(Diagnostic::new(
+            DiagnosticStage::Mule,
+            "MULE-005",
+            DiagnosticLevel::Error,
+            format!(
+                "Source file path escapes project root: {}",
+                joined.display()
+            ),
+        ));
+    }
+    Ok(canonical_joined)
+}
+
+/// Count newlines in `text[last_offset..current_offset]` and update
+/// the running `line` counter. Returns the (line, column) pair for
+/// `current_offset`. Used by [`read_and_parse`] to give every
+/// emitted source span a real line number rather than the hard-coded
+/// `1` the previous implementation produced.
+fn line_column_for(
+    text: &str,
+    current_offset: u64,
+    line: &mut u32,
+    line_start_offset: &mut u64,
+) -> (u32, u32) {
+    let start = (*line_start_offset) as usize;
+    let end = (current_offset as usize).min(text.len());
+    if start < end {
+        for (i, b) in text.as_bytes()[start..end].iter().enumerate() {
+            if *b == b'\n' {
+                *line += 1;
+                *line_start_offset = (start + i + 1) as u64;
+            }
+        }
+    }
+    let col = (current_offset - *line_start_offset) + 1;
+    (*line, col as u32)
+}
+
+#[allow(clippy::result_large_err)]
+fn read_and_parse(
+    path: &Path,
+    relative: &str,
+    options: &ParseOptions,
+) -> Result<MuleDocument, Diagnostic> {
     let bytes = std::fs::read(path).map_err(|source| diagnostic_io(relative, source))?;
+    if bytes.len() as u64 > options.limits.max_file_bytes {
+        return Err(Diagnostic::new(
+            DiagnosticStage::Xml,
+            "XML-001",
+            DiagnosticLevel::Error,
+            format!(
+                "File exceeds max_file_bytes ({} > {}) in {relative}",
+                bytes.len(),
+                options.limits.max_file_bytes
+            ),
+        ));
+    }
     let text = std::str::from_utf8(&bytes).map_err(|source| {
         Diagnostic::new(
             DiagnosticStage::Xml,
@@ -116,22 +198,34 @@ fn read_and_parse(path: &Path, relative: &str) -> Result<MuleDocument, Diagnosti
     let mut sub_flows: Vec<MuleFlow> = Vec::new();
     let mut component_counter: usize = 0;
     let mut depth: usize = 0;
+    // Real line / column tracking. Each event's `buffer_position()`
+    // is the absolute byte offset in the input; the newlines since
+    // the previous event are counted and the running `line` is
+    // updated. The previous implementation hard-coded `line = 1` for
+    // every component, which made every source span useless for
+    // multi-file or multi-line XML.
+    let mut line: u32 = 1;
+    let mut line_start_offset: u64 = 0;
 
     loop {
+        let before_offset = reader.buffer_position();
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 depth += 1;
-                if depth > 256 {
+                if depth > options.limits.max_xml_depth {
                     return Err(Diagnostic::new(
                         DiagnosticStage::Xml,
                         "XML-002",
                         DiagnosticLevel::Error,
-                        format!("XML depth exceeds 256 in {relative}"),
+                        format!(
+                            "XML depth exceeds {} in {relative}",
+                            options.limits.max_xml_depth
+                        ),
                     ));
                 }
                 let (qualified, local, attributes) = describe_start(&e);
-                let pos = reader.buffer_position();
-                let source = SourceSpan::point(relative, 1, pos as u32 + 1);
+                let span = line_column_for(text, before_offset, &mut line, &mut line_start_offset);
+                let source = SourceSpan::point(relative, span.0, span.1);
                 component_counter += 1;
                 let component = MuleComponent {
                     id: format!("component:{component_counter:04}"),
@@ -148,8 +242,8 @@ fn read_and_parse(path: &Path, relative: &str) -> Result<MuleDocument, Diagnosti
             }
             Ok(Event::Empty(e)) => {
                 let (qualified, local, attributes) = describe_start(&e);
-                let pos = reader.buffer_position();
-                let source = SourceSpan::point(relative, 1, pos as u32 + 1);
+                let span = line_column_for(text, before_offset, &mut line, &mut line_start_offset);
+                let source = SourceSpan::point(relative, span.0, span.1);
                 component_counter += 1;
                 let component = MuleComponent {
                     id: format!("component:{component_counter:04}"),
@@ -184,9 +278,16 @@ fn read_and_parse(path: &Path, relative: &str) -> Result<MuleDocument, Diagnosti
             }
             Ok(Event::Text(t)) => {
                 if let Some(frame) = stack.last_mut() {
-                    let text = t.unescape().unwrap_or_default().to_string();
-                    if !text.trim().is_empty() {
-                        frame.component.text = Some(text);
+                    // Accumulate (rather than overwrite) so adjacent
+                    // text runs such as `<x>before<y/>after</x>`
+                    // don't lose `before`. CDATA is collected
+                    // separately — it must not be treated as text.
+                    let piece = t.unescape().unwrap_or_default().to_string();
+                    if !piece.is_empty() {
+                        match frame.component.text.as_mut() {
+                            Some(existing) => existing.push_str(&piece),
+                            None => frame.component.text = Some(piece),
+                        }
                     }
                 }
             }

@@ -70,9 +70,10 @@ fn markdown_renders_all_sections() {
     assert!(out.contains("## Generated Artifacts"));
     assert!(out.contains("## Tool and Schema Versions"));
     assert!(out.contains("RG-TEST-001"));
-    // HTML special chars must NOT appear as raw HTML — the markdown
-    // renderer only needs to avoid breaking pipe characters.
-    assert!(out.contains("This is <the> sample & message"));
+    // HTML special chars must be escaped — GFM renderers honour inline
+    // HTML, so emitting a raw `<` lets an attacker inject script tags
+    // through any user-controlled field (rule title, message, file path).
+    assert!(out.contains("This is &lt;the&gt; sample &amp; message"));
 }
 
 #[test]

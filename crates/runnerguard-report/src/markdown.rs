@@ -238,10 +238,34 @@ fn sev_label(s: Severity) -> &'static str {
     }
 }
 
+/// Escape user-supplied text for safe interpolation into Markdown output.
+///
+/// Markdown is rendered by GFM viewers that honor inline HTML, so `<`,
+/// `>`, `&`, backtick, and backslash must all be neutralised in addition
+/// to the table-pipe and newline that the table renderer needs.
 fn escape_md(s: &str) -> String {
-    s.replace('|', "\\|").replace('\n', " ")
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            '`' => out.push_str("\\`"),
+            '|' => out.push_str("\\|"),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push(' '),
+            '\r' => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
+/// Escape user-supplied text for safe interpolation into a fenced code
+/// block. We replace any occurrence of the closing fence with a longer
+/// fence so a malicious payload can't close the block early.
 fn escape_code(s: &str) -> String {
-    s.replace("```", "```")
+    // Replace every backtick run with a backslash-escaped equivalent so
+    // the user cannot close our ```json fence prematurely.
+    s.replace('`', "\\`")
 }

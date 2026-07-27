@@ -124,16 +124,17 @@ pub struct ScanSummary {
 }
 
 impl ScanSummary {
+    /// Returns true when any severity at or above `fail_on` was emitted.
+    /// The threshold is monotonic: `--fail-on warning` trips on errors and
+    /// criticals as well as warnings.
     pub fn threshold_exceeded(&self, fail_on: Severity) -> bool {
-        let rank = fail_on.rank();
-        if rank <= Severity::Info.rank() {
-            self.info > 0
-        } else if rank == Severity::Warning.rank() {
-            self.warning > 0
-        } else if rank == Severity::Error.rank() {
-            self.error > 0
-        } else {
-            self.critical > 0
+        match fail_on {
+            Severity::Info => {
+                self.info > 0 || self.warning > 0 || self.error > 0 || self.critical > 0
+            }
+            Severity::Warning => self.warning > 0 || self.error > 0 || self.critical > 0,
+            Severity::Error => self.error > 0 || self.critical > 0,
+            Severity::Critical => self.critical > 0,
         }
     }
 }

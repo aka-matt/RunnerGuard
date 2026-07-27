@@ -95,5 +95,6 @@ pub fn requires_value(op: Operator) -> bool {
             | Operator::CountLessThanOrEqual
             | Operator::ContainsComponent
             | Operator::NotContainsComponent
+            | Operator::RequiredFilesExist
     )
 }

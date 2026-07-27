@@ -36,8 +36,10 @@ pub fn render(
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        // Decode a full UTF-8 char so multi-byte sequences survive intact.
+        let ch = template[i..].chars().next().expect("valid char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }

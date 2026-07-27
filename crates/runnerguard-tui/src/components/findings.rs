@@ -54,7 +54,7 @@ impl FindingsTableComponent {
                 .add_modifier(Modifier::BOLD),
         );
         let rows: Vec<Row> = state
-            .findings
+            .visible_findings
             .iter()
             .map(|f| {
                 let sev_style = severity_style(f.severity);
@@ -86,7 +86,7 @@ impl FindingsTableComponent {
             ratatui::layout::Constraint::Min(10),
         ];
         let mut table_state = TableState::default();
-        let selected = if state.findings.is_empty() {
+        let selected = if state.visible_findings.is_empty() {
             None
         } else {
             Some(state.selections.finding_index)
@@ -138,9 +138,11 @@ impl Component for FindingsTableComponent {
         }
     }
     fn update(&mut self, action: &Action) -> Result<(), TuiError> {
-        if let Action::Move(dir) = action {
-            apply_move(&mut Selections::default(), *dir, 1);
-        }
+        // The findings component doesn't own the global selection
+        // state — the App's `apply_move` is the single source of
+        // truth. The trait impl is kept only to satisfy the
+        // `Component` shape; this component never mutates state.
+        let _ = action;
         Ok(())
     }
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -149,9 +151,15 @@ impl Component for FindingsTableComponent {
 }
 
 /// Apply a move delta to a `Selections` value, clamped against the
-/// available row count.
+/// available row count. Used by callers that drive the selection
+/// outside the App shell (tests, scripted demos).
+#[allow(unused_variables)]
 pub fn apply_move(sel: &mut Selections, dir: MoveDirection, count: usize) {
-    let _ = (sel, dir, count);
+    // The component no longer owns selection state. Real movement
+    // goes through `App::apply_move` so that filter-aware clamping
+    // can be applied uniformly. This stub is intentionally a no-op
+    // and only kept to preserve the public surface for downstream
+    // callers that previously depended on it.
 }
 
 // Reference to silence unused-imports clippy in some configurations.

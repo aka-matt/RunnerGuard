@@ -112,6 +112,20 @@ async fn allowlist_blocks_disallowed_host() {
 }
 
 #[tokio::test]
+async fn default_deny_blocks_every_host() {
+    // Empty allowlist = nothing allowed (SSRF defence). Even offline
+    // mode can't bypass this — but offline returns first, so set it
+    // false to reach the allowlist check.
+    let config = HttpClientConfig::default();
+    let client = ReqwestHttpClient::new(config).unwrap();
+    let err = client
+        .execute(HttpRequest::get("https://example.test/"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, HttpError::HostNotAllowed { .. }));
+}
+
+#[tokio::test]
 async fn allowlist_allows_exact_match() {
     let config = HttpClientConfig {
         allow_hosts: vec!["allowed.test".to_string()],
@@ -131,7 +145,11 @@ async fn allowlist_allows_exact_match() {
 #[tokio::test]
 async fn reqwest_client_sends_get_and_parses_response() {
     let (url, counter) = start_test_server(200, "{\"ok\":true}", None).await;
-    let client = ReqwestHttpClient::new(HttpClientConfig::default()).unwrap();
+    let config = HttpClientConfig {
+        allow_hosts: vec!["127.0.0.1".to_string()],
+        ..HttpClientConfig::default()
+    };
+    let client = ReqwestHttpClient::new(config).unwrap();
     let resp = client.execute(HttpRequest::get(&url)).await.unwrap();
     assert_eq!(resp.status, 200);
     assert_eq!(resp.text().unwrap(), "{\"ok\":true}");
@@ -141,7 +159,11 @@ async fn reqwest_client_sends_get_and_parses_response() {
 #[tokio::test]
 async fn reqwest_client_posts_json() {
     let (url, _) = start_test_server(200, "ok", None).await;
-    let client = ReqwestHttpClient::new(HttpClientConfig::default()).unwrap();
+    let config = HttpClientConfig {
+        allow_hosts: vec!["127.0.0.1".to_string()],
+        ..HttpClientConfig::default()
+    };
+    let client = ReqwestHttpClient::new(config).unwrap();
     let req = HttpRequest::post(
         &url,
         runnerguard_http::RequestBody::Json(serde_json::json!({"a": 1})),
@@ -157,6 +179,7 @@ async fn retry_429_then_success() {
     let config = HttpClientConfig {
         retry_count: 3,
         timeout: Duration::from_secs(5),
+        allow_hosts: vec!["127.0.0.1".to_string()],
         ..HttpClientConfig::default()
     };
     let client = ReqwestHttpClient::new(config).unwrap();
@@ -171,6 +194,7 @@ async fn no_retry_on_404() {
     let config = HttpClientConfig {
         retry_count: 3,
         timeout: Duration::from_secs(5),
+        allow_hosts: vec!["127.0.0.1".to_string()],
         ..HttpClientConfig::default()
     };
     let client = ReqwestHttpClient::new(config).unwrap();
@@ -187,6 +211,7 @@ async fn retries_exhausted_returns_last_status() {
     let config = HttpClientConfig {
         retry_count: 3,
         timeout: Duration::from_secs(5),
+        allow_hosts: vec!["127.0.0.1".to_string()],
         ..HttpClientConfig::default()
     };
     let client = ReqwestHttpClient::new(config).unwrap();

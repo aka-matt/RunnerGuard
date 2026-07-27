@@ -19,7 +19,7 @@ pub fn build_document(
     tool_version: &str,
 ) -> ReportDocument {
     let findings = sort_findings(&result.findings);
-    let summary = build_summary(result, findings.first().map(|f| f.severity));
+    let summary = build_summary(result, project, findings.first().map(|f| f.severity));
     ReportDocument {
         metadata: ReportMetadata {
             tool: "runnerguard".to_string(),
@@ -36,7 +36,11 @@ pub fn build_document(
     }
 }
 
-fn build_summary(result: &ScanResult, top: Option<Severity>) -> ReportSummary {
+fn build_summary(
+    result: &ScanResult,
+    project: &ParsedProject,
+    top: Option<Severity>,
+) -> ReportSummary {
     let mut summary = ReportSummary::default();
     for f in &result.findings {
         match f.severity {
@@ -50,7 +54,7 @@ fn build_summary(result: &ScanResult, top: Option<Severity>) -> ReportSummary {
     summary.flow_count = result.flow_count;
     summary.subflow_count = result.subflow_count;
     summary.rule_count = result.rule_count;
-    summary.files_scanned = project_file_count(&result.parser_diagnostics);
+    summary.files_scanned = project_file_count(project);
     summary.result = classify(top);
     summary
 }
@@ -63,9 +67,8 @@ fn classify(top: Option<Severity>) -> ScanResultKind {
     }
 }
 
-fn project_file_count(diagnostics: &[Diagnostic]) -> usize {
-    let _ = diagnostics;
-    0
+fn project_file_count(project: &ParsedProject) -> usize {
+    project.project.files.len()
 }
 
 /// Stable sort by severity desc → rule id → file → line → entity id.

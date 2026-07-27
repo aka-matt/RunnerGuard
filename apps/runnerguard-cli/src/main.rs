@@ -140,6 +140,21 @@ fn main() -> ExitCode {
         );
     }
 
+    // Exit-code precedence:
+    //   3 — XML / Mule parse error
+    //   5 — report-write failure (see REPORT-001 diagnostics)
+    //   1 — threshold exceeded
+    //   4 — forced AI / network operation failed
+    //   0 — success
+    let mut report_write_failed = false;
+    for d in &outcome.result.parser_diagnostics {
+        if d.stage == runnerguard_model::DiagnosticStage::Report
+            && matches!(d.level, runnerguard_model::DiagnosticLevel::Error)
+        {
+            report_write_failed = true;
+            break;
+        }
+    }
     if outcome.result.parser_diagnostics.iter().any(|d| {
         matches!(
             d.stage,
@@ -147,6 +162,9 @@ fn main() -> ExitCode {
         ) && matches!(d.level, runnerguard_model::DiagnosticLevel::Error)
     }) {
         return ExitCode::from(3);
+    }
+    if report_write_failed {
+        return ExitCode::from(5);
     }
     if outcome.threshold_exceeded {
         return ExitCode::from(1);
@@ -211,8 +229,12 @@ impl ProgressSink for CliTextSink {
             }
             ScanEvent::Finished { summary } => {
                 println!(
-                    "  result: {:?} ({} finding(s))",
-                    summary.findings_total, summary.findings_total
+                    "  result: {} finding(s) ({} critical / {} error / {} warning / {} info)",
+                    summary.findings_total,
+                    summary.critical,
+                    summary.error,
+                    summary.warning,
+                    summary.info,
                 );
             }
         }

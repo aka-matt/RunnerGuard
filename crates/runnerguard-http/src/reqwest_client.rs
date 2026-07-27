@@ -71,17 +71,20 @@ impl HttpClient for ReqwestHttpClient {
         }
 
         // Allowlist enforcement happens BEFORE any network I/O.
+        // Empty allowlist = NOTHING allowed (default-deny). The previous
+        // behaviour treated empty as "any host OK" which was an SSRF
+        // hole — callers must opt in by listing the hosts they intend
+        // to reach.
         let parsed = Url::parse(&request.url).map_err(|e| HttpError::InvalidUrl(e.to_string()))?;
         let host = parsed
             .host_str()
             .ok_or_else(|| HttpError::InvalidUrl("missing host".to_string()))?
             .to_string();
-        if !self.config.allow_hosts.is_empty()
-            && !self
-                .config
-                .allow_hosts
-                .iter()
-                .any(|h| h == &host || host.ends_with(&format!(".{h}")))
+        if !self
+            .config
+            .allow_hosts
+            .iter()
+            .any(|h| h == &host || host.ends_with(&format!(".{h}")))
         {
             return Err(HttpError::HostNotAllowed { host });
         }

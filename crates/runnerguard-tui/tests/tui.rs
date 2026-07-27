@@ -403,6 +403,45 @@ fn filter_narrows_findings() {
     let before = app.state.findings.len();
     let changed = app.state.apply_filter("Default");
     assert!(changed);
-    assert!(app.state.findings.len() <= before);
-    assert!(!app.state.findings.is_empty());
+    // The filter narrows `visible_findings` but does NOT mutate the
+    // authoritative `findings` list — clearing the filter restores
+    // the original view.
+    assert!(app.state.findings.len() == before);
+    assert!(app.state.visible_findings.len() < before);
+    assert!(!app.state.visible_findings.is_empty());
+    app.state.clear_filter();
+    assert_eq!(app.state.visible_findings.len(), before);
+}
+
+#[test]
+fn short_path_handles_non_ascii() {
+    // Regression test for the previous byte-slicing implementation
+    // which panicked on paths containing multi-byte UTF-8 chars
+    // such as `订单`. The new implementation must NOT panic and must
+    // produce a valid truncated form.
+    let path = "C:/projetos/mulesoft/src/main/mule/订单/order-api.xml";
+    let out = runnerguard_tui::view::short_path(path, 28);
+    assert!(out.contains('…'));
+    // Short paths (≤ max) are returned verbatim.
+    let short = "short.xml";
+    assert_eq!(runnerguard_tui::view::short_path(short, 28), short);
+    // Exactly max-length path stays whole.
+    let exact = "x".repeat(28);
+    assert_eq!(runnerguard_tui::view::short_path(&exact, 28), exact);
+}
+
+#[test]
+fn config_loaded_event_is_recorded() {
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    app.state.apply_event(ScanEvent::ConfigLoaded {
+        config_path: "/tmp/runnerguard.yaml".to_string(),
+    });
+    assert_eq!(
+        app.state.config_path.as_deref(),
+        Some(std::path::Path::new("/tmp/runnerguard.yaml"))
+    );
 }

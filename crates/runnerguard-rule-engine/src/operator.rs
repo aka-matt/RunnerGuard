@@ -17,7 +17,7 @@
 
 use crate::context::{EvalContext, EvalTarget};
 use crate::error::EngineError;
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use runnerguard_model::{FlowRef, MuleComponent, Operator, ParsedProject};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -75,16 +75,38 @@ fn op_not_equals(actual: &Value, expected: &Option<Value>) -> Result<bool, Engin
     Ok(actual == e)
 }
 
+/// Compile a regex with a `dfa_size_limit` and a pattern-size cap so a
+/// rule author can't craft an adversarial pattern (`(a+)+$`) that sends
+/// the engine into catastrophic backtracking. Without these limits a
+/// single badly-written rule can hang the scanner.
+fn compile_bounded_regex(pattern: &str) -> Result<Regex, EngineError> {
+    const MAX_PATTERN_BYTES: usize = 1024;
+    if pattern.len() > MAX_PATTERN_BYTES {
+        return Err(EngineError::Evaluate {
+            rule_id: String::new(),
+            message: format!(
+                "regex pattern too long ({} bytes > {MAX_PATTERN_BYTES})",
+                pattern.len()
+            ),
+        });
+    }
+    RegexBuilder::new(pattern)
+        .dfa_size_limit(1 << 20) // 1 MiB — plenty for typical rule patterns
+        .size_limit(1 << 20)
+        .build()
+        .map_err(|e| EngineError::Evaluate {
+            rule_id: String::new(),
+            message: format!("invalid regex `{pattern}`: {e}"),
+        })
+}
+
 fn op_matches_fires_when(
     actual: &Value,
     expected: &Option<Value>,
     fires_when_matches: bool,
 ) -> Result<bool, EngineError> {
     let pattern = string_arg(expected, "matches")?;
-    let regex = Regex::new(pattern).map_err(|e| EngineError::Evaluate {
-        rule_id: String::new(),
-        message: format!("invalid regex `{pattern}`: {e}"),
-    })?;
+    let regex = compile_bounded_regex(pattern)?;
     let actual_str = string_value(actual);
     let matches = regex.is_match(actual_str);
     Ok(if fires_when_matches {
@@ -195,11 +217,12 @@ fn op_count(actual: &Value, expected: &Option<Value>, op: CountOp) -> Result<boo
             });
         }
     };
+    // Convention: operators return `true` when the assertion fails (the rule fires).
     let holds = match op {
         CountOp::Eq => count == expected_n,
         CountOp::Le => count <= expected_n,
     };
-    Ok(holds)
+    Ok(!holds)
 }
 
 fn is_placeholder(s: &str) -> bool {
@@ -309,4 +332,22 @@ fn string_arg<'a>(expected: &'a Option<Value>, op: &str) -> Result<&'a str, Engi
 #[allow(dead_code)]
 fn distinct_values(values: &[Value]) -> HashSet<&str> {
     values.iter().filter_map(|v| v.as_str()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_bounded_regex_rejects_huge_pattern() {
+        let huge = "a".repeat(2048);
+        let err = compile_bounded_regex(&huge).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("too long"), "got: {msg}");
+    }
+
+    #[test]
+    fn compile_bounded_regex_accepts_simple_pattern() {
+        assert!(compile_bounded_regex(r"^\d+$").is_ok());
+    }
 }

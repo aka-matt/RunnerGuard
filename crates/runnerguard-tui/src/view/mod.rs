@@ -84,13 +84,30 @@ pub fn highlight_lines<L>(items: Vec<L>, selected: Option<usize>) -> Vec<L> {
 
 /// Format a path the user will see; truncate to keep the layout
 /// readable when the path is long.
+///
+/// Operates on **char** boundaries (not raw byte offsets) so paths
+/// containing multi-byte UTF-8 characters never panic. The previous
+/// implementation used `&path[..16]` which is unsound for paths like
+/// `C:/projetos/mulesoft/src/main/mule/订单.xml` — the cut point could
+/// land inside a multi-byte sequence and panic with `byte index N is
+/// not a char boundary`.
 #[must_use]
 pub fn short_path(path: &str, max: usize) -> String {
-    if path.len() <= max {
-        path.to_string()
-    } else {
-        let head = &path[..16];
-        let tail_start = path.len().saturating_sub(max.saturating_sub(20));
-        format!("{head}…{}", &path[tail_start..])
+    let char_count = path.chars().count();
+    if char_count <= max {
+        return path.to_string();
     }
+    let head_count = 16.min(max.saturating_sub(20));
+    let tail_count = max.saturating_sub(head_count + 1);
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars().take(head_count) {
+        out.push(c);
+    }
+    out.push('…');
+    let total = path.chars().count();
+    let skip = total.saturating_sub(tail_count);
+    for c in path.chars().skip(skip) {
+        out.push(c);
+    }
+    out
 }

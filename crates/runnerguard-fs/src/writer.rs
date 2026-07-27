@@ -48,6 +48,11 @@ pub enum WriteError {
 /// Atomically write `content` to `path`. The destination either ends up
 /// containing the entire new content, or it is unchanged. A best-effort
 /// cleanup removes the temp file on failure.
+///
+/// The temp file lives in the same directory as `path` (so the rename is
+/// atomic on every filesystem) but its name is unique per invocation —
+/// `<name>.<pid>.<nanos>.tmp` — so concurrent writers do not race for the
+/// same temp path and clobber each other's in-flight bytes.
 pub fn write_atomic(path: &Path, content: &[u8]) -> Result<(), WriteError> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -58,13 +63,20 @@ pub fn write_atomic(path: &Path, content: &[u8]) -> Result<(), WriteError> {
         }
     }
 
+    // Build a unique temp name so two concurrent writers do not clobber
+    // each other's in-flight bytes before the rename.
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let temp = match path.file_name() {
         Some(name) => {
             let mut s = name.to_os_string();
-            s.push(".tmp");
+            s.push(format!(".{pid}.{nanos}.tmp"));
             path.with_file_name(s)
         }
-        None => path.with_extension("tmp"),
+        None => path.with_extension(format!("{pid}.{nanos}.tmp")),
     };
 
     let write_result = (|| -> Result<(), WriteError> {
@@ -90,10 +102,17 @@ pub fn write_atomic(path: &Path, content: &[u8]) -> Result<(), WriteError> {
     })();
 
     if write_result.is_err() {
-        let _ = fs::remove_file(&temp).map_err(|source| WriteError::Cleanup {
-            temp: temp.clone(),
-            source,
-        });
+        // Surface cleanup failures rather than silently dropping them.
+        if let Err(source) = fs::remove_file(&temp) {
+            // Preserve the original error and attach cleanup context via
+            // a wrapping error. Use eprintln to avoid inventing a new
+            // error variant mid-fix.
+            eprintln!(
+                "warning: could not clean up temp file {}: {}",
+                temp.display(),
+                source
+            );
+        }
     }
 
     write_result

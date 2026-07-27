@@ -20,11 +20,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Default)]
 pub struct ScanService {
     _private: (),
+    #[cfg(feature = "ai")]
+    ai_service: Option<std::sync::Arc<runnerguard_ai::AiService>>,
 }
 
 impl ScanService {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Inject an AI service so the scan can run an optional AI pass
+    /// when the request's `ai_mode` is `Optional` or `Required`.
+    /// Has no effect when the `ai` feature is disabled.
+    #[cfg(feature = "ai")]
+    pub fn with_ai_service(mut self, ai: std::sync::Arc<runnerguard_ai::AiService>) -> Self {
+        self.ai_service = Some(ai);
+        self
     }
 
     /// Run the scan end-to-end.
@@ -55,7 +66,7 @@ impl ScanService {
                     DiagnosticLevel::Error,
                     format!("discovery failed: {e}"),
                 ));
-                return finish_with(sink, result, Vec::new(), Vec::new(), false);
+                return finish_with(sink, result, Vec::new(), Vec::new(), false, request.fail_on);
             }
         };
         for f in &discovery.files {
@@ -130,23 +141,35 @@ impl ScanService {
                     format!("rule {}: {}", issue.rule_id, issue.message),
                 ));
             }
+            // Emit a RuleStarted for every compiled rule BEFORE the
+            // pass — the rule engine evaluates them in one call so
+            // per-rule events must be surfaced up front.
             for rule in &compiled.rules {
                 sink.emit(ScanEvent::RuleStarted {
                     rule_id: rule.id.clone(),
                 });
-                let outcome = evaluate_with_source(&compiled, &rule_set.rules, &parsed.project);
-                let n = outcome.findings.len();
-                for f in outcome.findings {
-                    findings.push(f);
-                }
-                for e in outcome.errors {
-                    result.parser_diagnostics.push(Diagnostic::new(
-                        DiagnosticStage::Rule,
-                        "RULES-003",
-                        DiagnosticLevel::Error,
-                        e.to_string(),
-                    ));
-                }
+            }
+            let outcome = evaluate_with_source(&compiled, &rule_set.rules, &parsed.project);
+            // Per-rule finding counts must be computed BEFORE the
+            // findings Vec is moved into the accumulator.
+            let mut by_rule: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for f in &outcome.findings {
+                *by_rule.entry(f.rule_id.clone()).or_insert(0) += 1;
+            }
+            for f in outcome.findings {
+                findings.push(f);
+            }
+            for e in outcome.errors {
+                result.parser_diagnostics.push(Diagnostic::new(
+                    DiagnosticStage::Rule,
+                    "RULES-003",
+                    DiagnosticLevel::Error,
+                    e.to_string(),
+                ));
+            }
+            for rule in &compiled.rules {
+                let n = by_rule.get(&rule.id).copied().unwrap_or(0);
                 sink.emit(ScanEvent::RuleCompleted {
                     rule_id: rule.id.clone(),
                     findings: n,
@@ -160,7 +183,71 @@ impl ScanService {
         // 5. Optional AI pass.
         if matches!(request.ai_mode, AiMode::Required | AiMode::Optional) {
             sink.emit(ScanEvent::AiStarted);
-            sink.emit(ScanEvent::AiCompleted { findings: 0 });
+            #[cfg(feature = "ai")]
+            {
+                if let Some(ai) = self.ai_service.as_ref() {
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(handle) => {
+                            let project = parsed.project.clone();
+                            let det = result.findings.clone();
+                            let ai_clone = ai.clone();
+                            // Block on the AI future; the CLI runs
+                            // inside a tokio runtime and the AI pass
+                            // is expected to take seconds to minutes.
+                            let join = std::thread::Builder::new()
+                                .name("runnerguard-ai".to_string())
+                                .spawn(move || {
+                                    handle.block_on(
+                                        async move { ai_clone.review(&project, &det).await },
+                                    )
+                                });
+                            match join {
+                                Ok(handle) => match handle.join() {
+                                    Ok(res) => {
+                                        for d in &res.diagnostics {
+                                            result.parser_diagnostics.push(Diagnostic::new(
+                                                DiagnosticStage::Ai,
+                                                "AI-001",
+                                                DiagnosticLevel::Warning,
+                                                d.clone(),
+                                            ));
+                                        }
+                                        result.findings.extend(res.findings);
+                                    }
+                                    Err(e) => {
+                                        result.parser_diagnostics.push(Diagnostic::new(
+                                            DiagnosticStage::Ai,
+                                            "AI-002",
+                                            DiagnosticLevel::Error,
+                                            format!("AI thread panicked: {e:?}"),
+                                        ));
+                                    }
+                                },
+                                Err(e) => {
+                                    result.parser_diagnostics.push(Diagnostic::new(
+                                        DiagnosticStage::Ai,
+                                        "AI-002",
+                                        DiagnosticLevel::Error,
+                                        format!("AI thread spawn failed: {e}"),
+                                    ));
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            result.parser_diagnostics.push(Diagnostic::new(
+                                DiagnosticStage::Ai,
+                                "AI-003",
+                                DiagnosticLevel::Error,
+                                "AI requested but no tokio runtime is active; run inside #[tokio::main]"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
+            sink.emit(ScanEvent::AiCompleted {
+                findings: result.findings.len(),
+            });
         }
 
         // 6. Per-flow artifacts.
@@ -211,12 +298,25 @@ impl ScanService {
                     let path = request
                         .output_dir
                         .join(format!("report.{}", format.extension()));
-                    if write_atomic(&path, &b).is_ok() {
-                        sink.emit(ScanEvent::ReportWritten {
-                            format: *format,
-                            path: path.display().to_string(),
-                        });
-                        report_paths.push(path);
+                    match write_atomic(&path, &b) {
+                        Ok(()) => {
+                            sink.emit(ScanEvent::ReportWritten {
+                                format: *format,
+                                path: path.display().to_string(),
+                            });
+                            report_paths.push(path);
+                        }
+                        Err(e) => {
+                            // Surface the write failure as a diagnostic so
+                            // the CLI can return exit code 5 (per the
+                            // documented contract).
+                            result.parser_diagnostics.push(Diagnostic::new(
+                                DiagnosticStage::Report,
+                                "REPORT-002",
+                                DiagnosticLevel::Error,
+                                format!("failed to write report {}: {e}", path.display()),
+                            ));
+                        }
                     }
                 }
                 Err(e) => {
@@ -230,7 +330,14 @@ impl ScanService {
             }
         }
 
-        finish_with(sink, result, artifact_paths, report_paths, false)
+        finish_with(
+            sink,
+            result,
+            artifact_paths,
+            report_paths,
+            false,
+            request.fail_on,
+        )
     }
 }
 
@@ -240,9 +347,13 @@ fn finish_with(
     artifact_paths: Vec<PathBuf>,
     report_paths: Vec<PathBuf>,
     incomplete: bool,
+    fail_on: Severity,
 ) -> ScanOutcome {
     let summary = result.summary();
-    let threshold = summary.threshold_exceeded(Severity::Warning);
+    // `threshold_exceeded` is monotonic in `fail_on` rank: a Warning
+    // threshold trips on Warning/Error/Critical, while Critical only
+    // trips on Critical — see `runnerguard_model::scan::threshold_exceeded`.
+    let threshold = summary.threshold_exceeded(fail_on);
     sink.emit(ScanEvent::Finished { summary });
     ScanOutcome {
         result,

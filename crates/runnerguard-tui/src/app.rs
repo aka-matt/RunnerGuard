@@ -300,7 +300,10 @@ impl App {
     }
 
     fn apply_move(&mut self, dir: MoveDirection) {
-        let n = self.state.findings.len();
+        // Movement operates on the filtered view, not the raw
+        // findings list — otherwise the selection index can land on a
+        // row that's currently hidden.
+        let n = self.state.visible_findings.len();
         if n == 0 {
             return;
         }
@@ -322,7 +325,13 @@ impl App {
                 self.cancel.store(true, Ordering::SeqCst);
             }
             "filter" => {
-                self.state.filter = Some(String::new());
+                // The "filter" affordance is reached from the
+                // findings page; tapping it again clears an active
+                // filter so the user can step out of the narrowed
+                // view without losing findings.
+                if self.state.filter.is_some() {
+                    self.state.clear_filter();
+                }
             }
             "help" => {
                 self.state.current_page = PageId::ScanProgress;

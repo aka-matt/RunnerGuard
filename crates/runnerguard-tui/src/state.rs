@@ -49,7 +49,10 @@ impl Stage {
 #[derive(Debug, Default)]
 pub struct AppState {
     pub progress: ProgressCounters,
+    /// The authoritative findings list (never filtered).
     pub findings: Vec<Finding>,
+    /// Filtered view of `findings` when a filter is active.
+    pub visible_findings: Vec<Finding>,
     pub diagnostics: Vec<Diagnostic>,
     pub report_paths: Vec<PathBuf>,
     pub artifact_paths: Vec<PathBuf>,
@@ -59,6 +62,7 @@ pub struct AppState {
     pub selections: Selections,
     pub filter: Option<String>,
     pub running: bool,
+    pub config_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -119,7 +123,10 @@ impl AppState {
                 self.progress.project = Some(project);
                 self.progress.stage = Stage::Discovery;
             }
-            ScanEvent::ConfigLoaded { .. } => {}
+            ScanEvent::ConfigLoaded { config_path } => {
+                self.config_path = Some(PathBuf::from(&config_path));
+                self.progress.last_event = Some(format!("config loaded: {config_path}"));
+            }
             ScanEvent::FileDiscovered { path } => {
                 self.progress.current_file = Some(path);
                 self.progress.stage = Stage::Discovery;
@@ -175,32 +182,69 @@ impl AppState {
     pub fn set_findings(&mut self, findings: Vec<Finding>) {
         self.findings = findings;
         self.progress.finding_count = self.findings.len();
-        if self.selections.finding_index >= self.findings.len() && !self.findings.is_empty() {
-            self.selections.finding_index = self.findings.len() - 1;
+        self.recompute_visible();
+        if self.selections.finding_index >= self.visible_findings.len()
+            && !self.visible_findings.is_empty()
+        {
+            self.selections.finding_index = self.visible_findings.len() - 1;
         }
     }
 
     /// Apply an optional regex filter on the cached findings list.
     /// Returns true if the visibility of any row changed.
+    ///
+    /// The filter narrows `visible_findings` but **never** mutates the
+    /// authoritative `findings` list — clearing the filter restores
+    /// the original view.
     pub fn apply_filter(&mut self, pattern: &str) -> bool {
         use regex::Regex;
         let regex = match Regex::new(pattern) {
             Ok(r) => r,
             Err(_) => return false,
         };
-        let before = self.findings.len();
-        self.findings.retain(|f| {
-            f.rule_id.contains(pattern)
-                || f.message.contains(pattern)
-                || f.entity_id.as_deref().unwrap_or("").contains(pattern)
-                || regex.is_match(&f.rule_id)
-                || regex.is_match(&f.message)
-        });
-        before != self.findings.len()
+        let before = self.visible_findings.len();
+        self.filter = Some(pattern.to_string());
+        self.recompute_visible_with(&regex, pattern);
+        // Clamp selection into the new view.
+        if self.selections.finding_index >= self.visible_findings.len() {
+            self.selections.finding_index = self.visible_findings.len().saturating_sub(1);
+        }
+        before != self.visible_findings.len()
+    }
+
+    /// Clear any active filter and restore the full findings view.
+    pub fn clear_filter(&mut self) {
+        self.filter = None;
+        self.visible_findings = self.findings.clone();
+    }
+
+    fn recompute_visible(&mut self) {
+        if let Some(pat) = self.filter.clone() {
+            if let Ok(regex) = regex::Regex::new(&pat) {
+                self.recompute_visible_with(&regex, &pat);
+                return;
+            }
+        }
+        self.visible_findings = self.findings.clone();
+    }
+
+    fn recompute_visible_with(&mut self, regex: &regex::Regex, pattern: &str) {
+        self.visible_findings = self
+            .findings
+            .iter()
+            .filter(|f| {
+                f.rule_id.contains(pattern)
+                    || f.message.contains(pattern)
+                    || f.entity_id.as_deref().unwrap_or("").contains(pattern)
+                    || regex.is_match(&f.rule_id)
+                    || regex.is_match(&f.message)
+            })
+            .cloned()
+            .collect();
     }
 
     pub fn highlighted_finding(&self) -> Option<&Finding> {
-        self.findings.get(self.selections.finding_index)
+        self.visible_findings.get(self.selections.finding_index)
     }
 }
 

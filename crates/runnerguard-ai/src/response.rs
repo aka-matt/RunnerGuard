@@ -8,7 +8,6 @@ use regex::Regex;
 use runnerguard_json::{DefaultSchemaValidator, SchemaValidator};
 use runnerguard_model::{AiAnalysis, AiMetadata};
 use serde_json::Value;
-use std::sync::OnceLock;
 
 /// Wrapper for an AI response that has been parsed into a JSON value
 /// but not yet validated against the AI response schema.
@@ -204,8 +203,7 @@ pub fn detect_injection(text: &str) -> Option<String> {
         "system:",
     ];
     for m in markers {
-        static RE: OnceLock<Regex> = OnceLock::new();
-        let re = RE.get_or_init(|| Regex::new(&format!("(?i){m}")).unwrap());
+        let re = Regex::new(&format!("(?i){m}")).expect("marker regex");
         if re.is_match(text) {
             // The marker itself inside a fenced code block is fine if
             // we found a JSON object — but if it's appearing in the
