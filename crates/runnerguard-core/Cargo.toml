@@ -1,0 +1,34 @@
+[package]
+name = "runnerguard-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Orchestration layer that wires RunnerGuard crates together"
+
+[lints]
+workspace = true
+
+[dependencies]
+runnerguard-model = { path = "../runnerguard-model" }
+runnerguard-fs = { path = "../runnerguard-fs" }
+runnerguard-json = { path = "../runnerguard-json" }
+runnerguard-config = { path = "../runnerguard-config" }
+runnerguard-mule-parser = { path = "../runnerguard-mule-parser" }
+runnerguard-rule-engine = { path = "../runnerguard-rule-engine" }
+runnerguard-report = { path = "../runnerguard-report" }
+runnerguard-ai = { path = "../runnerguard-ai", optional = true }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+default = []
+ai = ["dep:runnerguard-ai"]
+
+[dev-dependencies]
+tempfile = { workspace = true }

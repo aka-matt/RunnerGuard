@@ -1,0 +1,23 @@
+[package]
+name = "runnerguard-mule-parser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "MuleSoft XML parser producing flow JSON for RunnerGuard"
+
+[lints]
+workspace = true
+
+[dependencies]
+runnerguard-model = { path = "../runnerguard-model" }
+runnerguard-fs = { path = "../runnerguard-fs" }
+
+quick-xml = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

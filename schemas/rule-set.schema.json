@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runnerguard.dev/schemas/rule-set.schema.json",
+  "title": "RunnerGuard RuleSet",
+  "description": "JSON Schema for a RunnerGuard rule set (Draft 2020-12).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "name", "version", "rules"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Stable identifier for the rule set (kebab-case)."
+    },
+    "name": { "type": "string", "minLength": 1 },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semantic version of the rule set."
+    },
+    "description": { "type": "string" },
+    "defaults": { "$ref": "#/$defs/rule_defaults" },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/rule" }
+    }
+  },
+  "$defs": {
+    "rule_defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "severity": { "$ref": "#/$defs/severity" }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "severity", "target", "assert", "message"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9-]+$",
+          "description": "Stable rule identifier, e.g. MULE-FLOW-001."
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "enabled": { "type": "boolean", "default": true },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "target": { "$ref": "#/$defs/target" },
+        "when": {
+          "description": "Optional pre-condition. The rule only runs when `when` evaluates to true.",
+          "$ref": "#/$defs/condition"
+        },
+        "assert": { "$ref": "#/$defs/condition" },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Template for the user-visible message. Supports {{ placeholders }}."
+        },
+        "recommendation": {
+          "type": "string",
+          "description": "Optional remediation text. Same template syntax as `message`."
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity"],
+      "properties": {
+        "entity": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/target_entity" }
+        },
+        "match": {
+          "description": "Optional filter that further narrows the target entities.",
+          "$ref": "#/$defs/condition"
+        }
+      }
+    },
+    "target_entity": {
+      "type": "string",
+      "enum": [
+        "project",
+        "file",
+        "flow",
+        "subflow",
+        "component",
+        "property-reference",
+        "flow-reference",
+        "dataweave-block"
+      ]
+    },
+    "condition": {
+      "oneOf": [
+        { "$ref": "#/$defs/single_condition" },
+        { "$ref": "#/$defs/all_condition" },
+        { "$ref": "#/$defs/any_condition" },
+        { "$ref": "#/$defs/not_condition" }
+      ]
+    },
+    "all_condition": {
+      "type": "object",
+      "required": ["all"],
+      "additionalProperties": false,
+      "properties": {
+        "all": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/condition" }
+        }
+      }
+    },
+    "any_condition": {
+      "type": "object",
+      "required": ["any"],
+      "additionalProperties": false,
+      "properties": {
+        "any": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/condition" }
+        }
+      }
+    },
+    "not_condition": {
+      "type": "object",
+      "required": ["not"],
+      "additionalProperties": false,
+      "properties": {
+        "not": { "$ref": "#/$defs/condition" }
+      }
+    },
+    "single_condition": {
+      "type": "object",
+      "required": ["fact", "op"],
+      "additionalProperties": false,
+      "properties": {
+        "fact": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*(\\.[a-z0-9-]+)+$",
+          "description": "Dotted fact path, e.g. `flow.name` or `component.attributes.port`."
+        },
+        "op": { "$ref": "#/$defs/operator" },
+        "value": {
+          "description": "Operand for the operator. Required unless the operator is value-less.",
+          "type": ["string", "number", "boolean", "array", "object", "null"]
+        }
+      }
+    },
+    "operator": {
+      "type": "string",
+      "enum": [
+        "exists",
+        "not-exists",
+        "equals",
+        "not-equals",
+        "matches",
+        "not-matches",
+        "contains",
+        "not-contains",
+        "in",
+        "not-in",
+        "greater-than",
+        "greater-than-or-equal",
+        "less-than",
+        "less-than-or-equal",
+        "count-equals",
+        "count-less-than-or-equal",
+        "is-placeholder",
+        "is-not-placeholder",
+        "contains-component",
+        "not-contains-component",
+        "reference-resolves",
+        "all-references-resolve",
+        "required-files-exist"
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "warning", "error", "critical"]
+    }
+  }
+}

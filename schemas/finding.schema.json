@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runnerguard.dev/schemas/finding.schema.json",
+  "title": "RunnerGuard Finding",
+  "description": "JSON Schema for a single RunnerGuard finding (deterministic or AI).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "rule_id",
+    "severity",
+    "title",
+    "message",
+    "evidence",
+    "origin"
+  ],
+  "properties": {
+    "rule_id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9-]+$"
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "warning", "error", "critical"]
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "message": { "type": "string", "minLength": 1 },
+    "recommendation": { "type": "string" },
+    "entity_id": { "type": "string" },
+    "source": { "$ref": "#/$defs/source_span" },
+    "evidence": {},
+    "origin": {
+      "type": "string",
+      "enum": ["deterministic-rule", "ai-suggestion", "parser-diagnostic"]
+    },
+    "rule_version": { "type": "string" }
+  },
+  "$defs": {
+    "source_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "start_line", "start_column", "end_line", "end_column"],
+      "properties": {
+        "file": { "type": "string" },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "start_column": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "end_column": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

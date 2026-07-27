@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runnerguard.dev/schemas/flow.schema.json",
+  "title": "RunnerGuard Flow Artifact",
+  "description": "JSON Schema for a single Mule flow / subflow artifact serialised by RunnerGuard.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "project_id",
+    "kind",
+    "name",
+    "source",
+    "namespaces",
+    "attributes",
+    "components",
+    "facts",
+    "source_xml_sha256"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "id": { "type": "string", "minLength": 1 },
+    "project_id": { "type": "string", "minLength": 1 },
+    "kind": { "type": "string", "enum": ["flow", "sub-flow"] },
+    "name": { "type": "string", "minLength": 1 },
+    "source": { "$ref": "#/$defs/source_span" },
+    "namespaces": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "attributes": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "components": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/component" }
+    },
+    "facts": { "$ref": "#/$defs/flow_facts" },
+    "source_xml_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "$defs": {
+    "source_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "start_line", "start_column", "end_line", "end_column"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "start_column": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "end_column": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "qualified_name", "local_name", "attributes", "children", "source"],
+      "properties": {
+        "id": { "type": "string" },
+        "qualified_name": { "type": "string" },
+        "local_name": { "type": "string" },
+        "namespace_uri": { "type": ["string", "null"] },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "text": { "type": ["string", "null"] },
+        "cdata": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/component" }
+        },
+        "source": { "$ref": "#/$defs/source_span" }
+      }
+    },
+    "flow_facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "component_count": { "type": "integer", "minimum": 0 },
+        "max_component_depth": { "type": "integer", "minimum": 0 },
+        "flow_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/flow_ref" }
+        },
+        "property_refs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "dataweave_blocks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dataweave_block" }
+        },
+        "has_local_error_handler": { "type": "boolean" },
+        "has_effective_error_handler": { "type": "boolean" },
+        "source_component": { "type": ["string", "null"] }
+      }
+    },
+    "flow_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "resolved", "source"],
+      "properties": {
+        "target": { "type": "string" },
+        "resolved": { "type": "boolean" },
+        "source": { "$ref": "#/$defs/source_span" }
+      }
+    },
+    "dataweave_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "content_hash", "content", "source"],
+      "properties": {
+        "language": { "type": "string" },
+        "version": { "type": ["string", "null"] },
+        "content_hash": { "type": "string" },
+        "content": { "type": "string" },
+        "source": { "$ref": "#/$defs/source_span" }
+      }
+    }
+  }
+}

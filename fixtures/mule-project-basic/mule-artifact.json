@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "1.0.0",
+  "name": "order-api",
+  "classifier": "mule-application",
+  "requiredProduct": "Mule",
+  "bundleEngineVersion": "4.9.0",
+  "minMuleVersion": "4.9.0",
+  "minRuntimeVersion": "4.5.0",
+  "applicationDescription": "Sample MuleSoft 4 application used by RunnerGuard fixtures.",
+  "redacted": false
+}

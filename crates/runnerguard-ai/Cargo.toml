@@ -1,0 +1,28 @@
+[package]
+name = "runnerguard-ai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "AI provider abstraction with prompt templates for RunnerGuard"
+
+[lints]
+workspace = true
+
+[dependencies]
+runnerguard-model = { path = "../runnerguard-model" }
+runnerguard-http = { path = "../runnerguard-http" }
+runnerguard-json = { path = "../runnerguard-json" }
+
+async-trait = { workspace = true }
+jsonschema = { workspace = true }
+minijinja = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "runnerguard-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "YAML configuration loader with secret redaction for RunnerGuard"
+
+[lints]
+workspace = true
+
+[dependencies]
+runnerguard-model = { path = "../runnerguard-model" }
+
+directories = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }

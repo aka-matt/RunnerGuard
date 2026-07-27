@@ -1,0 +1,22 @@
+[package]
+name = "runnerguard-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Generic HTTP client with retry/allowlist/timeout for RunnerGuard"
+
+[lints]
+workspace = true
+
+[dependencies]
+runnerguard-model = { path = "../runnerguard-model" }
+
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }

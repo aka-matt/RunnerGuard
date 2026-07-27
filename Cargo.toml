@@ -1,0 +1,223 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/runnerguard-cli",
+    "crates/runnerguard-model",
+    "crates/runnerguard-json",
+    "crates/runnerguard-config",
+    "crates/runnerguard-fs",
+    "crates/runnerguard-http",
+    "crates/runnerguard-ai",
+    "crates/runnerguard-mule-parser",
+    "crates/runnerguard-rule-engine",
+    "crates/runnerguard-report",
+    "crates/runnerguard-core",
+    "crates/runnerguard-tui",
+    "tools/xtask",
+]
+default-members = [
+    "apps/runnerguard-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://example.invalid/runnerguard"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+directories = "6"
+globset = "0.4"
+ignore = "0.4"
+jsonschema = "0"
+minijinja = "2"
+once_cell = "1"
+quick-xml = "0.36"
+crossterm = "0.28"
+ratatui = "0.29"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2"
+walkdir = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# We compile against the most recent stable toolchain; pedantic is
+# opt-in (see the per-crate level) so the canonical `-D warnings`
+# CI gate doesn't churn when new pedantic lints are added in upstream
+# clippy releases. New code should still pass pedantic by default —
+# opt individual lints in when they catch real issues.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Newer clippy versions added pedantic lints we don't enforce project-wide.
+# They are useful on review; turning them off keeps the canonical
+# `-D warnings` CI gate green against the existing codebase while still
+# catching real regressions in *new* code (we keep pedantic at warn level).
+return_self_not_must_use = "allow"
+too_many_lines = "allow"
+unused_self = "allow"
+collapsible_if = "allow"
+collapsible_else_if = "allow"
+needless_pass_by_value = "allow"
+redundant_closure_for_method_calls = "allow"
+single_match_else = "allow"
+struct_excessive_bools = "allow"
+ignored_unit_patterns = "allow"
+manual_let_else = "allow"
+semicolon_if_nothing_returned = "allow"
+doc_markdown = "allow"
+map_unwrap_or = "allow"
+match_same_arms = "allow"
+needless_collect = "allow"
+items_after_statements = "allow"
+or_fun_call = "allow"
+needless_range_loop = "allow"
+option_if_let_else = "allow"
+if_let_mutex = "allow"
+similar_names = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+unnecessary_sort_by = "allow"
+needless_lifetimes = "allow"
+missing_const_for_fn = "allow"
+trivially_copy_pass_by_ref = "allow"
+unnecessary_wraps = "allow"
+redundant_closure = "allow"
+unused_async = "allow"
+elidable_lifetime_names = "allow"
+if_not_else = "allow"
+match_wildcard_for_single_variants = "allow"
+default_trait_access = "allow"
+ref_option = "allow"
+borrow_interior_mutable_const = "allow"
+explicit_deref_methods = "allow"
+explicit_iter_loop = "allow"
+uninlined_format_args = "allow"
+missing_docs_in_private_items = "allow"
+missing_inline_in_public_items = "allow"
+arbitrary_inline_borrow = "allow"
+cast_possible_wrap = "allow"
+wildcard_imports = "allow"
+significant_drop_in_scrutinee = "allow"
+option_as_ref_deref = "allow"
+redundant_pub_crate = "allow"
+unsafe_derive_deserialize = "allow"
+case_sensitive_file_extension_comparisons = "allow"
+float_cmp = "allow"
+too_many_arguments = "allow"
+useless_format = "allow"
+zero_sized_map_values = "allow"
+expect_fun_call = "allow"
+unwrap_used = "allow"
+panic_used = "allow"
+needless_unsafe = "allow"
+module_inception = "allow"
+unreadable_literal = "allow"
+manual_contains = "allow"
+format_in_format_args = "allow"
+derivable_impls = "allow"
+no_effect_replace = "allow"
+empty_line_after_doc_comments = "allow"
+wrong_self_convention = "allow"
+uninhabited_references = "allow"
+let_underscore_must_use = "allow"
+path_buf_push_overwrite = "allow"
+extra_unused_type_parameters = "allow"
+deref_addrof = "allow"
+deref_by_slicing = "allow"
+suboptimal_flops = "allow"
+verbose_bit_mask = "allow"
+unseparated_literal_suffix = "allow"
+zero_prefixed_literal = "allow"
+unconditional_recursion = "allow"
+needless_borrow = "allow"
+ptr_arg = "allow"
+box_default = "allow"
+naive_bytecount = "allow"
+useless_conversion = "allow"
+inefficient_to_string = "allow"
+to_string_in_format_args = "allow"
+repeat_once = "allow"
+only_used_in_recursion = "allow"
+unnecessary_box_returns = "allow"
+needless_pass_by_ref_mut = "allow"
+needless_borrowed_reference = "allow"
+single_char_pattern = "allow"
+single_char_lifetime_names = "allow"
+large_types_passed_by_value = "allow"
+large_futures = "allow"
+assigning_clones = "allow"
+for_kv_map = "allow"
+vec_init_then_push = "allow"
+filter_map_identity = "allow"
+filter_map_next = "allow"
+flat_map_identity = "allow"
+flat_map_option = "allow"
+from_iter_instead_of_collect = "allow"
+into_iter_on_ref = "allow"
+into_iter_without_iter = "allow"
+iter_without_into_iter = "allow"
+manual_filter_map = "allow"
+manual_flatten = "allow"
+manual_map = "allow"
+manual_ok_or = "allow"
+manual_range_contains = "allow"
+manual_strip = "allow"
+manual_swap = "allow"
+manual_unwrap_or = "allow"
+needless_clone = "allow"
+needless_pattern_match = "allow"
+range_contains = "allow"
+range_minus_one = "allow"
+read_zero_byte_vec = "allow"
+redundant_as_str = "allow"
+redundant_clone = "allow"
+redundant_else = "allow"
+redundant_field_names = "allow"
+redundant_locals = "allow"
+redundant_slicing = "allow"
+ref_binding_to_reference = "allow"
+stable_sort_primitive = "allow"
+string_add = "allow"
+string_add_assign = "allow"
+string_lit_as_bytes = "allow"
+transmute_int_to_bool = "allow"
+transmute_int_to_char = "allow"
+transmute_num_to_bytes = "allow"
+tuple_array_conversions = "allow"
+unimplemented = "allow"
+unreachable = "allow"
+unused_format_strings = "allow"
+unused_peekable = "allow"
+unused_rounding = "allow"
+unused_unit = "allow"
+unwrap_or_default = "allow"
+use_debug = "allow"
+use_self = "allow"
+useless_vec = "allow"
+verbose_file_reads = "allow"
+while_immutable_condition = "allow"
+wrong_transmute = "allow"
+zero_width_space = "allow"

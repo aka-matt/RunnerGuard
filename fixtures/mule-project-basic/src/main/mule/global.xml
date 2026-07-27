@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:error-handler="http://www.mulesoft.org/schema/mule/error-handler"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+          http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+          http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+          http://www.mulesoft.org/schema/mule/error-handler http://www.mulesoft.org/schema/mule/error-handler/current/mule-error-handler.xsd">
+
+    <http:listener-config name="order-api-listener-config">
+        <http:listener-connection host="0.0.0.0" port="${http.port}" />
+    </http:listener-config>
+
+    <error-handler name="global-error-handler">
+        <on-error-propagate type="ANY">
+            <logger level="ERROR" message="Unhandled error: #[error.description]" />
+        </on-error-propagate>
+    </error-handler>
+</mule>

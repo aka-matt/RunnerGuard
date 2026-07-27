@@ -1,0 +1,101 @@
+name: ci
+
+on:
+  push:
+    branches: [main, step1, step2_M3]
+  pull_request:
+    branches: [main, step1, step2_M3]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  ci:
+    name: ci (${{ matrix.os }}, rust ${{ matrix.toolchain }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        toolchain: [stable]
+        include:
+          - toolchain: stable
+            # MSRV is enforced via rust-version in Cargo.toml; the
+            # stable matrix is the only one we run because the
+            # workspace currently uses Rust 2024 idioms that need
+            # 1.85+ to compile. The MSRV check is documented in the
+            # README and exercised by the optional msrv job below.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Check (all targets)
+        run: cargo check --workspace --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Doc
+        run: cargo doc --workspace --no-deps
+
+      - name: Build release binary
+        run: cargo build --release -p runnerguard-cli --bin runnerguard
+
+      - name: Upload release binary
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: runnerguard-ubuntu
+          path: target/release/runnerguard
+          if-no-files-found: warn
+
+  msrv:
+    name: msrv (ubuntu, rust 1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@1.88
+      - name: Check MSRV
+        run: cargo check --workspace --all-targets
+
+  security:
+    name: security audit
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          arguments: check
+      - name: cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runnerguard.dev/schemas/ai-response.schema.json",
+  "title": "RunnerGuard AI Response",
+  "description": "JSON Schema for the response produced by an OpenAI-compatible AI provider. The model is asked to emit findings in this shape; the runner parses them, repairs malformed JSON once, and discards everything else.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "summary", "suggestions"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "const": "1.0"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One-paragraph explanation of the model's review."
+    },
+    "suggestions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/suggestion" }
+    },
+    "model": {
+      "type": "string",
+      "description": "Optional model identifier echoed for traceability."
+    }
+  },
+  "$defs": {
+    "suggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "severity", "message", "target"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^AI-[A-Z0-9-]+$",
+          "description": "AI-prefixed identifier. Deterministic rules never use this namespace."
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "warning", "error", "critical"]
+        },
+        "message": { "type": "string", "minLength": 1 },
+        "recommendation": { "type": "string" },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entity"],
+          "properties": {
+            "entity": {
+              "type": "string",
+              "enum": [
+                "project",
+                "file",
+                "flow",
+                "subflow",
+                "component",
+                "property-reference",
+                "flow-reference",
+                "dataweave-block"
+              ]
+            },
+            "name": { "type": "string" },
+            "file": { "type": "string" }
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "description": "Free-form evidence payload; only the keys the model itself produced.",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

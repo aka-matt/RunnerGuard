@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0.0",
+  "name": "missing-mule-config",
+  "classifier": "mule-application",
+  "requiredProduct": "Mule",
+  "applicationDescription": "Intentionally missing required Mule descriptor fields."
+}

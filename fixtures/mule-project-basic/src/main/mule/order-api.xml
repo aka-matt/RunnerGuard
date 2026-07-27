@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+          http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+          http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+          http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <flow name="order-api-flow">
+        <http:listener config-ref="order-api-listener-config" path="/orders" />
+        <logger level="INFO" message="Received order request" />
+        <flow-ref name="validate-order-subflow" />
+        <ee:transform>
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ status: "ok" }]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+    </flow>
+
+    <sub-flow name="validate-order-subflow">
+        <logger level="DEBUG" message="Validating payload" />
+        <set-variable variableName="validated" value="#[true]" />
+    </sub-flow>
+</mule>

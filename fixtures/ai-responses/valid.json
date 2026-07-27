@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "summary": "Demo response used by runnerguard-ai's parse_mock_response example.",
+  "model": "demo-model",
+  "suggestions": [
+    {
+      "id": "AI-DEMO-001",
+      "title": "Consider adding a circuit breaker",
+      "severity": "warning",
+      "message": "The order-api flow calls an external HTTP endpoint without a circuit breaker, so transient failures will surface as 500s.",
+      "recommendation": "Wrap the HTTP request in a Mule circuit-breaker scope.",
+      "target": {
+        "entity": "flow",
+        "name": "order-api",
+        "file": "src/main/mule/order-api.xml"
+      },
+      "evidence": {
+        "component_path": "order-api/processors/0",
+        "confidence": 0.7
+      }
+    }
+  ]
+}
