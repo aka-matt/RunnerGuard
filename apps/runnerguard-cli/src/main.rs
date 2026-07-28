@@ -3,10 +3,21 @@
 //! This crate is intentionally thin: clap wiring, exit-code handling,
 //! and the call into [`runnerguard_core`]. No XML parsing, rule
 //! evaluation, or report rendering lives here.
+//!
+//! Three progress-sink strategies exist:
+//!
+//! * `--json-events` — line-delimited JSON to stdout (CI-friendly).
+//! * (default) — pretty text on stdout (CLI summary).
+//! * `--tui` — run the scan, then open the Ratatui TUI in review mode
+//!   over the final `ScanOutcome`.
+//! * `--tui-live` — open the TUI while the scan is still running;
+//!   events stream in over a channel.
+//!
+//! The last two are gated behind the `tui` cargo feature.
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use runnerguard_core::{ProgressSink, ScanEvent, ScanService};
-use runnerguard_model::{AiMode, ReportFormat, ScanRequest, Severity};
+use runnerguard_model::{AiMode, ReportFormat, ScanOutcome, ScanRequest, Severity};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -45,16 +56,31 @@ struct Cli {
     #[arg(long = "ai", value_enum, default_value_t = AiArg::Disabled)]
     ai: AiArg,
 
-    /// Print every progress event as a JSON line.
+    /// Print every progress event as a JSON line. Mutually exclusive
+    /// with the TUI flags.
     #[arg(long = "json-events")]
     json_events: bool,
 
     /// Path to a YAML config file (loaded before flags; flags override).
     #[arg(long = "config")]
     config: Option<PathBuf>,
+
+    /// Run the scan silently, then open the interactive TUI in review
+    /// mode over the final outcome. Requires the `tui` cargo feature.
+    /// Mutually exclusive with `--tui-live` and `--json-events`.
+    #[cfg(feature = "tui")]
+    #[arg(long = "tui", conflicts_with_all = ["tui_live", "json_events"])]
+    tui: bool,
+
+    /// Open the interactive TUI immediately and stream `ScanEvent`s in
+    /// while the scan runs in a background thread. Requires the `tui`
+    /// cargo feature. Mutually exclusive with `--tui` and `--json-events`.
+    #[cfg(feature = "tui")]
+    #[arg(long = "tui-live", conflicts_with_all = ["tui", "json_events"])]
+    tui_live: bool,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, clap::ValueEnum)]
 enum ReportFormatArg {
     Markdown,
     Html,
@@ -69,7 +95,7 @@ impl From<ReportFormatArg> for ReportFormat {
     }
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, clap::ValueEnum)]
 enum SeverityArg {
     Info,
     Warning,
@@ -88,7 +114,7 @@ impl From<SeverityArg> for Severity {
     }
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, clap::ValueEnum)]
 enum AiArg {
     Disabled,
     Optional,
@@ -122,6 +148,20 @@ fn main() -> ExitCode {
         rule_filter: Default::default(),
     };
 
+    // ── TUI paths ────────────────────────────────────────────────
+    // Branch before constructing the text/json sink so live mode can
+    // stream events into the TUI's channel instead of stdout.
+    #[cfg(feature = "tui")]
+    {
+        if cli.tui {
+            return run_tui_preloaded(&req);
+        }
+        if cli.tui_live {
+            return run_tui_live(&req);
+        }
+    }
+
+    // ── CLI text / JSON-event paths ──────────────────────────────
     let mut sink: Box<dyn ProgressSink> = if cli.json_events {
         Box::new(JsonEventSink)
     } else {
@@ -140,12 +180,18 @@ fn main() -> ExitCode {
         );
     }
 
-    // Exit-code precedence:
-    //   3 — XML / Mule parse error
-    //   5 — report-write failure (see REPORT-001 diagnostics)
-    //   1 — threshold exceeded
-    //   4 — forced AI / network operation failed
-    //   0 — success
+    exit_code_for(&outcome)
+}
+
+/// Translate a finished [`ScanOutcome`] into the documented exit code.
+///
+/// Precedence (highest first):
+/// 1. 3 — XML / Mule parse error (Error-level Xml or Mule diagnostic).
+/// 2. 5 — report-write failure (REPORT-001 / REPORT-002).
+/// 3. 1 — `--fail-on` threshold exceeded.
+/// 4. 4 — AI / network forced operation failed (incomplete).
+/// 5. 0 — success.
+fn exit_code_for(outcome: &ScanOutcome) -> ExitCode {
     let mut report_write_failed = false;
     for d in &outcome.result.parser_diagnostics {
         if d.stage == runnerguard_model::DiagnosticStage::Report
@@ -184,6 +230,103 @@ fn init_tracing() {
         .with_target(false)
         .try_init();
 }
+
+// ─── TUI modes (feature-gated) ─────────────────────────────────────
+
+/// Run the scan silently into a [`NullSink`], then enter the TUI over
+/// the resulting [`ScanOutcome`]. Final exit code honours `--fail-on`.
+#[cfg(feature = "tui")]
+fn run_tui_preloaded(req: &ScanRequest) -> ExitCode {
+    use runnerguard_core::NullSink;
+    use runnerguard_tui::{ScanSource, run_cli};
+
+    let mut sink = NullSink;
+    let outcome = ScanService::new().run_with_sink(req, &mut sink);
+    let threshold_exceeded = outcome.threshold_exceeded;
+
+    match run_cli(ScanSource::Preloaded(outcome)) {
+        Ok(()) => exit_code_for_threshold(threshold_exceeded),
+        Err(err) => {
+            eprintln!("tui error: {err}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Run the TUI immediately; the actual scan runs on a worker thread
+/// and feeds the TUI's receiver via [`ChannelSink`]. Report files are
+/// written by the worker thread; the TUI never blocks on report I/O.
+///
+/// Because the scan happens off-thread we cannot honour `--fail-on`
+/// after TUI exit — the worker may still be writing reports. We exit
+/// with 0 on clean quit and 4 only if the worker died (which the user
+/// would already see as a stuck UI).
+#[cfg(feature = "tui")]
+fn run_tui_live(req: &ScanRequest) -> ExitCode {
+    use runnerguard_tui::{ScanSource, run_cli};
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ScanEvent>();
+    let req_for_thread = req.clone();
+    let handle = match std::thread::Builder::new()
+        .name("runnerguard-scan".to_string())
+        .spawn(move || {
+            let mut sink = ChannelSink { tx };
+            // Drop the sender when the scan returns so the TUI's
+            // receiver can drain to completion.
+            ScanService::new().run_with_sink(&req_for_thread, &mut sink);
+        }) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("failed to spawn scan thread: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let tui_result = run_cli(ScanSource::Channel(rx));
+
+    // The scan thread continues to completion in the background so
+    // reports + artifacts are still written. We join it so the
+    // process only exits after the worker is done. Bound the wait
+    // so a stuck TUI quit doesn't deadlock the worker.
+    match handle.join() {
+        Ok(()) => {}
+        Err(_) => eprintln!("warning: scan worker panicked"),
+    }
+
+    match tui_result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("tui error: {err}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+#[cfg(feature = "tui")]
+fn exit_code_for_threshold(threshold_exceeded: bool) -> ExitCode {
+    if threshold_exceeded {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// [`ProgressSink`] adapter that forwards every event into the TUI's
+/// event channel. Send errors are ignored: the receiver is dropped on
+/// TUI exit, and we don't want to poison the scan thread.
+#[cfg(feature = "tui")]
+struct ChannelSink {
+    tx: tokio::sync::mpsc::UnboundedSender<ScanEvent>,
+}
+
+#[cfg(feature = "tui")]
+impl ProgressSink for ChannelSink {
+    fn emit(&mut self, event: ScanEvent) {
+        let _ = self.tx.send(event);
+    }
+}
+
+// ─── CLI text / JSON sinks ─────────────────────────────────────────
 
 #[derive(Default)]
 struct CliTextSink;

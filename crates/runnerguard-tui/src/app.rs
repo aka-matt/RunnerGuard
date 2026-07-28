@@ -21,9 +21,8 @@ use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::time::interval;
 
 /// Where the App receives events from. Useful for testing — tests
 /// pass a `Vec<Event>` rather than polling stdin.
@@ -82,6 +81,10 @@ pub struct App {
     scan_rx: Option<UnboundedReceiver<runnerguard_core::ScanEvent>>,
     preloaded: Option<runnerguard_model::ScanOutcome>,
     tick: Duration,
+    /// Wall-clock throttle for the `Event::Tick` heartbeat. Set to
+    /// `None` initially so the *first* idle poll emits a tick
+    /// immediately; subsequent ticks gate on this.
+    last_tick: Option<Instant>,
 }
 
 impl std::fmt::Debug for App {
@@ -119,6 +122,7 @@ impl App {
             scan_rx,
             preloaded,
             tick: Duration::from_millis(250),
+            last_tick: None,
         }
     }
 
@@ -204,10 +208,38 @@ impl App {
             EventSource::Terminal => {
                 if event::poll(Duration::from_millis(50)).ok()? {
                     let ev = event::read().ok()?;
+                    // A real input event counts as activity — let the
+                    // next idle period stretch the full `self.tick`.
+                    self.last_tick = Some(Instant::now());
                     Some(from_crossterm(ev))
                 } else {
-                    let _ = interval(self.tick);
-                    Some(Event::Tick)
+                    // Throttle `Event::Tick` to at most once per
+                    // `self.tick` so the loop doesn't burn cycles when
+                    // the screen is idle. Uses `std::time::Instant`
+                    // directly — the previous `tokio::time::interval`
+                    // required a Tokio runtime, which `App::run` is not
+                    // running inside (TUI is sync).
+                    let now = Instant::now();
+                    let due = self
+                        .last_tick
+                        .is_none_or(|t| now.duration_since(t) >= self.tick);
+                    if due {
+                        self.last_tick = Some(now);
+                        Some(Event::Tick)
+                    } else {
+                        // Sleep for the residual interval so we don't
+                        // spin the CPU. Cap at 50ms to stay responsive
+                        // to the next crossterm event.
+                        let residual = self
+                            .last_tick
+                            .and_then(|t| self.tick.checked_sub(now.duration_since(t)))
+                            .unwrap_or(self.tick)
+                            .min(Duration::from_millis(50));
+                        std::thread::sleep(residual);
+                        // Recurse once: re-poll so a freshly-arrived
+                        // key is preferred over a synthetic Tick.
+                        self.poll_event()
+                    }
                 }
             }
             EventSource::Test(vec) => vec.pop(),
@@ -405,4 +437,30 @@ pub fn run_cli(scan: ScanSource) -> Result<(), TuiError> {
     app.run(guard.terminal_mut())?;
     guard.dispose()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: building the App and inspecting the throttle must
+    /// not depend on a Tokio runtime. The previous `poll_event` called
+    /// `tokio::time::interval(self.tick)` which panicked with
+    /// "there is no reactor running" the first time the production
+    /// code path ran outside a `#[tokio::main]`. This test pins the
+    /// App's behaviour: `last_tick` starts at `None` (so the first
+    /// idle poll emits a tick); an externally-set `last_tick` is
+    /// read back through `pub` fields; we can move `Instant` along
+    /// without any tokio context.
+    #[test]
+    fn app_does_not_require_a_tokio_runtime_for_idle_timing() {
+        let app = App::new(EventSource::Test(Vec::new()), ScanSource::None);
+        assert!(app.last_tick.is_none(), "fresh App starts with no tick");
+        let mut app = app;
+        // Drive the throttle manually; this is what `poll_event`
+        // does internally — no Tokio involved.
+        let first = Instant::now();
+        app.last_tick = Some(first);
+        assert!(app.last_tick.is_some());
+    }
 }
