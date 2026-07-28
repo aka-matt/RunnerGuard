@@ -1266,3 +1266,327 @@ fn findings_highlight_walks_every_visible_row_on_a_tall_terminal() {
          actual viewport is at least 15 rows; got {target_row}",
     );
 }
+
+/// Regression for the `/` filter affordance. Until this change,
+/// `Action::Other("filter")` in `App::apply_other` was a clear-only
+/// toggle / no-op: pressing `/` on the Findings page either cleared
+/// an existing filter or did nothing visible, with no input mode,
+/// no prompt, and no way to actually type a pattern. The fix wires
+/// a real input mode that captures characters, applies the pattern
+/// on Enter, and cancels cleanly on Esc.
+#[test]
+fn filter_input_mode_captures_types_and_commits() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    for i in 0..20 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message for finding {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    app.state.current_page = PageId::Findings;
+    let pre_filter_visible = app.state.visible_findings.len();
+    assert_eq!(pre_filter_visible, 20);
+
+    // Pressing `/` on Findings must enter filter mode and pre-fill
+    // the draft with the (currently empty) filter pattern.
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Char('/'), KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert!(
+        app.state.filter_mode,
+        "/ must enter filter mode on Findings"
+    );
+    assert_eq!(
+        app.state.filter_input, "",
+        "draft must start empty when no filter is active",
+    );
+
+    // Each character press appends to the draft. We use the
+    // dispatcher end-to-end so the test pins the public contract
+    // rather than poking `apply_action` directly.
+    for ch in "MULE-001".chars() {
+        app.dispatch(from_crossterm(crossterm::event::Event::Key(
+            KeyEvent::new_with_kind(KeyCode::Char(ch), KeyModifiers::NONE, KeyEventKind::Press),
+        )));
+    }
+    assert_eq!(app.state.filter_input, "MULE-001");
+    // The applied filter must still be `None` until Enter commits.
+    assert!(
+        app.state.filter.is_none(),
+        "Enter alone must apply the filter"
+    );
+    assert_eq!(
+        app.state.visible_findings.len(),
+        pre_filter_visible,
+        "visible_findings must not narrow until Enter",
+    );
+
+    // Backspace pops one character.
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Backspace, KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert_eq!(app.state.filter_input, "MULE-00");
+
+    // Enter commits and exits filter mode.
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert!(!app.state.filter_mode, "Enter must exit filter mode");
+    assert!(app.state.filter_input.is_empty());
+    let applied = app.state.filter.as_deref().unwrap_or("");
+    assert_eq!(applied, "MULE-00");
+    // The filtered view should be smaller than the original list —
+    // `MULE-00*` matches exactly MULE-000 and MULE-001..MULE-009
+    // (ten findings), so visible_findings.len() must be < 20.
+    assert!(
+        app.state.visible_findings.len() < pre_filter_visible,
+        "applying MULE-00 must narrow visible_findings (was {}, now {})",
+        pre_filter_visible,
+        app.state.visible_findings.len(),
+    );
+}
+
+/// `Esc` while editing the filter must cancel without touching the
+/// currently-applied filter. This guards against the previous
+/// "clear-only toggle" behaviour, which lost the existing filter
+/// when the user pressed `/` then `Esc`.
+#[test]
+fn filter_input_esc_keeps_existing_filter() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    for i in 0..10 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message for finding {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    app.state.current_page = PageId::Findings;
+    // Seed a filter directly via the public state API.
+    app.state.apply_filter("MULE-00");
+    let pre_filter = app.state.filter.clone();
+    let pre_visible = app.state.visible_findings.len();
+    assert_eq!(pre_filter.as_deref(), Some("MULE-00"));
+
+    // Enter filter mode — draft must be pre-filled with the current
+    // filter so the user can edit in place.
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Char('/'), KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert!(app.state.filter_mode);
+    assert_eq!(
+        app.state.filter_input, "MULE-00",
+        "entering filter mode must pre-fill the draft with the active filter",
+    );
+
+    // Type something the user might change their mind about.
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Char('X'), KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert_eq!(app.state.filter_input, "MULE-00X");
+
+    // Esc cancels: filter mode off, draft cleared, but the *applied*
+    // filter must still be "MULE-00" so the user's view is preserved.
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert!(!app.state.filter_mode);
+    assert!(app.state.filter_input.is_empty());
+    assert_eq!(app.state.filter.as_deref(), Some("MULE-00"));
+    assert_eq!(app.state.visible_findings.len(), pre_visible);
+}
+
+/// Entering filter mode and committing an empty pattern must clear
+/// any existing filter. This makes `Enter` on an empty draft a
+/// shortcut for "show me everything again" without needing Esc +
+/// then a separate `/` toggle.
+#[test]
+fn filter_input_empty_enter_clears_filter() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    for i in 0..10 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message for finding {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    app.state.current_page = PageId::Findings;
+    app.state.apply_filter("MULE-00");
+    assert!(app.state.filter.is_some());
+    let total = app.state.findings.len();
+
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Char('/'), KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert!(app.state.filter_mode);
+    // Backspace enough times to clear the pre-filled draft.
+    for _ in 0.."MULE-00".len() {
+        app.dispatch(from_crossterm(crossterm::event::Event::Key(
+            KeyEvent::new_with_kind(KeyCode::Backspace, KeyModifiers::NONE, KeyEventKind::Press),
+        )));
+    }
+    assert!(app.state.filter_input.is_empty());
+
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert!(
+        app.state.filter.is_none(),
+        "empty Enter must clear the filter"
+    );
+    assert_eq!(
+        app.state.visible_findings.len(),
+        total,
+        "clearing the filter must restore the full list",
+    );
+}
+
+/// `/` on a non-Findings page must be ignored — the user would
+/// have nothing to filter there, and entering filter mode without
+/// a visible list is a dead end.
+#[test]
+fn filter_input_slash_only_works_on_findings_page() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    for i in 0..5 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message for finding {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    app.state.current_page = PageId::Diagnostics;
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Char('/'), KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert!(
+        !app.state.filter_mode,
+        "`/` on Diagnostics must not enter filter mode",
+    );
+    // Sanity: it works on Findings.
+    app.state.current_page = PageId::Findings;
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Char('/'), KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert!(
+        app.state.filter_mode,
+        "`/` on Findings must enter filter mode",
+    );
+}
+
+/// After exiting filter mode, `j` / `k` navigation must work again
+/// — otherwise the user could type a filter and then be stuck with
+/// no way to move through the resulting list.
+#[test]
+fn filter_input_j_k_navigation_works_after_exit() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    for i in 0..10 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message for finding {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    app.state.current_page = PageId::Findings;
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Char('/'), KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert!(!app.state.filter_mode);
+    let before = app.state.selections.finding_index;
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(
+        KeyEvent::new_with_kind(KeyCode::Char('j'), KeyModifiers::NONE, KeyEventKind::Press),
+    )));
+    assert_eq!(
+        app.state.selections.finding_index,
+        before + 1,
+        "j must move the selection again once filter mode is exited",
+    );
+}
+
+/// The footer must render the filter prompt (not the static help
+/// text) while filter mode is on. This guards against future
+/// refactors that accidentally let the default footer leak through.
+#[test]
+fn footer_renders_filter_prompt_in_filter_mode() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use runnerguard_core::ScanEvent;
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    for i in 0..5 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message for finding {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    app.state.current_page = PageId::Findings;
+    app.state.filter_mode = true;
+    app.state.filter_input = "MULE".to_string();
+    terminal
+        .draw(|frame| app.render(frame, frame.area()))
+        .expect("render with filter mode on");
+    let buf = terminal.backend().buffer().clone();
+    // The footer area is the last 3 rows (outer layout).
+    let footer_y = buf.area.height.saturating_sub(2);
+    let line_text: String = (0..buf.area.width)
+        .map(|x| buf[(x, footer_y)].symbol().to_string())
+        .collect();
+    assert!(
+        line_text.contains("Filter:"),
+        "footer must show the Filter prompt in filter mode, got: {line_text:?}",
+    );
+    assert!(
+        line_text.contains("MULE_"),
+        "footer prompt must include the draft + caret, got: {line_text:?}",
+    );
+}

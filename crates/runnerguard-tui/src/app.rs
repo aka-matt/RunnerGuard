@@ -39,6 +39,12 @@ use tokio::sync::mpsc::UnboundedReceiver;
 /// froze at row 8 forever.
 const FINDINGS_VIRTUAL_VIEWPORT: usize = 8;
 
+/// Hard cap on the in-progress filter pattern. Long enough for any
+/// realistic search string; bounded so a runaway paste can't blow
+/// up the layout. The footer prompt shows the draft verbatim, so
+/// going much past this risks wrapping or overflowing the footer.
+const MAX_FILTER_INPUT_LEN: usize = 128;
+
 /// Where the App receives events from. Useful for testing — tests
 /// pass a `Vec<Event>` rather than polling stdin.
 pub enum EventSource {
@@ -269,6 +275,13 @@ impl App {
                 self.apply_action(action);
                 return;
             }
+            // Filter input mode swallows every key that the keymap
+            // didn't convert into an action — otherwise `j` / `k` /
+            // arrows would still walk the table while the user is
+            // typing the pattern.
+            if self.state.filter_mode {
+                return;
+            }
         }
         let action = match self.state.focused_panel {
             PanelId::Header => self.header.handle_event(&event),
@@ -294,6 +307,28 @@ impl App {
     /// The global keymap. Public for tests so they can assert what
     /// each key produces without sending a real event.
     pub fn global_keymap(&self, key: &KeyEvent) -> Option<Action> {
+        // Filter input mode takes over the keymap — every printable
+        // character goes into the draft pattern, `Enter` commits it,
+        // `Esc` cancels, `Backspace` deletes the last char, and
+        // anything else is silently dropped (the dispatcher
+        // short-circuits the focused component as well, so `j` /
+        // `k` don't navigate the table while the user is typing).
+        if self.state.filter_mode {
+            return match key.code {
+                KeyCode::Esc => Some(Action::CancelFilterMode),
+                KeyCode::Enter => Some(Action::ApplyFilter(self.state.filter_input.clone())),
+                KeyCode::Backspace => Some(Action::FilterBackspace),
+                // `key.code` is a `Copy` field accessed by value,
+                // so `c` binds as `char` here.
+                KeyCode::Char(c) => Some(Action::FilterChar(c)),
+                _ => None,
+            };
+        }
+        // `/` is the entry point for filter input, but it only makes
+        // sense on the Findings page where the list lives. On every
+        // other page the key is dropped to avoid luring the user
+        // into a mode that has nothing to filter.
+        let on_findings = self.state.current_page == PageId::Findings;
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
             KeyCode::Tab => Some(Action::NextPanel),
@@ -303,7 +338,7 @@ impl App {
             KeyCode::Char('g') => Some(Action::Page(PageId::Flows)),
             KeyCode::Char('d') => Some(Action::Page(PageId::Diagnostics)),
             KeyCode::Char('r') => Some(Action::Other("rerun".to_string())),
-            KeyCode::Char('/') => Some(Action::Other("filter".to_string())),
+            KeyCode::Char('/') if on_findings => Some(Action::EnterFilterMode),
             KeyCode::Enter => Some(Action::Page(PageId::FindingDetail)),
             KeyCode::Char('?') => Some(Action::Other("help".to_string())),
             _ => None,
@@ -347,6 +382,45 @@ impl App {
             }
             Action::ClearFilter => {
                 self.state.filter = None;
+            }
+            Action::EnterFilterMode => {
+                // Pre-fill the draft with the currently-applied
+                // pattern so the user can edit it in place instead
+                // of starting from scratch. Switching into the mode
+                // also resets the cursor to the end of the draft.
+                self.state.filter_mode = true;
+                self.state.filter_input = self.state.filter.clone().unwrap_or_default();
+            }
+            Action::FilterChar(c) => {
+                if self.state.filter_mode && self.state.filter_input.len() < MAX_FILTER_INPUT_LEN {
+                    // `apply_action` matches on `&action`, so `c` is
+                    // bound as `&char` under match ergonomics —
+                    // dereference to feed the owned `char` the
+                    // `String::push` API expects.
+                    self.state.filter_input.push(*c);
+                }
+            }
+            Action::FilterBackspace => {
+                if self.state.filter_mode {
+                    self.state.filter_input.pop();
+                }
+            }
+            Action::ApplyFilter(pattern) => {
+                let pattern = pattern.trim().to_string();
+                if pattern.is_empty() {
+                    self.state.clear_filter();
+                } else {
+                    self.state.apply_filter(&pattern);
+                }
+                self.state.filter_mode = false;
+                self.state.filter_input.clear();
+            }
+            Action::CancelFilterMode => {
+                // Drop the draft without touching the *applied*
+                // filter — the user might want to keep the view
+                // they already had before pressing `/`.
+                self.state.filter_mode = false;
+                self.state.filter_input.clear();
             }
             Action::Other(payload) => self.apply_other(payload.clone()),
         }
@@ -473,15 +547,6 @@ impl App {
         match payload.as_str() {
             "rerun" => {
                 self.cancel.store(true, Ordering::SeqCst);
-            }
-            "filter" => {
-                // The "filter" affordance is reached from the
-                // findings page; tapping it again clears an active
-                // filter so the user can step out of the narrowed
-                // view without losing findings.
-                if self.state.filter.is_some() {
-                    self.state.clear_filter();
-                }
             }
             "help" => {
                 self.state.current_page = PageId::ScanProgress;

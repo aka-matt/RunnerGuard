@@ -60,7 +60,19 @@ pub struct AppState {
     pub current_page: PageId,
     pub focused_panel: PanelId,
     pub selections: Selections,
+    /// The currently applied findings filter pattern. `None` means
+    /// "show everything". Updated by [`crate::app::App::apply_action`]
+    /// when the user commits a pattern from filter-input mode.
     pub filter: Option<String>,
+    /// True while the user is typing a new filter pattern via the
+    /// `/` affordance. While this is set, key events are routed to
+    /// the filter-input machinery instead of the focused component.
+    pub filter_mode: bool,
+    /// In-progress draft pattern while [`Self::filter_mode`] is true.
+    /// Pre-filled from [`Self::filter`] when the user enters the
+    /// mode so they can edit the existing pattern instead of
+    /// starting from scratch.
+    pub filter_input: String,
     pub running: bool,
     pub config_path: Option<PathBuf>,
     /// Number of data rows the findings table could show on its

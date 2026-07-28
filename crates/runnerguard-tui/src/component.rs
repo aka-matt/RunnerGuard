@@ -35,6 +35,16 @@ pub enum Action {
     Enter,
     /// Clear an in-panel filter.
     ClearFilter,
+    /// Enter the findings-table filter input mode (toggled by `/`).
+    EnterFilterMode,
+    /// Append one character to the in-progress filter input.
+    FilterChar(char),
+    /// Remove the last character from the in-progress filter input.
+    FilterBackspace,
+    /// Commit the typed filter and exit input mode.
+    ApplyFilter(String),
+    /// Discard the in-progress filter and exit input mode.
+    CancelFilterMode,
     /// Component-opaque payload (e.g. toggling a sub-view).
     Other(String),
 }
