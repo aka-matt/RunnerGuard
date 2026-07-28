@@ -63,6 +63,13 @@ pub struct AppState {
     pub filter: Option<String>,
     pub running: bool,
     pub config_path: Option<PathBuf>,
+    /// Number of data rows the findings table could show on its
+    /// most recent render. Refreshed by `App::render_body` from the
+    /// actual layout chunk so `scroll_findings_offset_into_view` can
+    /// walk the highlight through every visible row instead of
+    /// pinning it to a constant "PageDown-step" slot. `0` means no
+    /// render has happened yet.
+    pub findings_viewport_rows: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -1102,3 +1102,167 @@ fn finding_events_accumulate_into_live_state() {
     assert_eq!(app.state.visible_findings.len(), 3);
     assert!(!app.state.running, "Finished event must clear `running`");
 }
+
+/// Regression: the `>>` indicator on the Findings page must be able
+/// to land on **more than one** visible row, not stay pinned to a
+/// fixed slot while the data scrolls past it.
+///
+/// The previous implementation of `scroll_findings_offset_into_view`
+/// approximated the viewport with the page-layout minimum (2 data
+/// rows). That made `offset = sel + 1 - viewport` always yield
+/// `sel - offset = 1`, so the highlight was glued to the second
+/// visible row forever — pressing `j` did advance the selection but
+/// the visible rows simply slid past underneath the same highlight.
+/// The user observed: "the selection indicator `>>` can only point
+/// to the first and second item; it's the list that's scrolling".
+///
+/// Contract for this test: walking the first 8 selections (rows
+/// 0..=7) must visit all 8 distinct visible slots. With the old
+/// buggy `viewport = 2` formula the only slots the user ever saw
+/// were `0` (start) and `1` (after the first press); with the fix
+/// the highlight reaches every visible row in the first viewport.
+#[test]
+fn findings_highlight_escapes_the_second_row_slot() {
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    // 50 findings — long enough that scrolling has to happen well
+    // before the user reaches the end.
+    for i in 0..50 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message for finding {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    app.state.current_page = PageId::Findings;
+    assert_eq!(app.state.findings.len(), 50);
+
+    // Sanity check: the first Down advances the selection by one
+    // and leaves the highlight at visible position 1 — i.e. the
+    // SAME slot the user complains about. The next six presses
+    // must move it past that slot, proving the bug is gone.
+    app.apply_action(Action::Move(MoveDirection::Home));
+    assert_eq!(app.state.selections.finding_index, 0);
+    assert_eq!(app.state.selections.finding_offset, 0);
+
+    let mut visited = std::collections::BTreeSet::new();
+    // Record the visible position before AND after each Down so the
+    // 8 selection states (rows 0..=7) are all represented.
+    visited.insert(app.state.selections.finding_index - app.state.selections.finding_offset);
+    for _ in 0..7 {
+        app.apply_action(Action::Move(MoveDirection::Down));
+        let sel = app.state.selections.finding_index;
+        let off = app.state.selections.finding_offset;
+        assert!(
+            sel >= off,
+            "selection ({sel}) must never be above the viewport (offset {off})",
+        );
+        visited.insert(sel - off);
+    }
+    assert_eq!(
+        visited.len(),
+        8,
+        "highlight must visit 8 distinct visible slots in the first \
+         viewport, visited {visited:?}",
+    );
+    // The buggy viewport=2 formula only ever let the highlight sit
+    // on visible slot 0 (start) or 1 (after one press). The fix
+    // must let it reach slot 7 — i.e. the last visible row.
+    assert!(
+        visited.contains(&7),
+        "highlight must reach the last visible slot (7) of the \
+         first viewport; visited {visited:?}",
+    );
+    // And it must NOT collapse to a single slot — that would
+    // reproduce the user's "only first and second item" complaint.
+    assert!(
+        visited.len() > 2,
+        "highlight must visit more than 2 slots; visited {visited:?}",
+    );
+}
+
+/// Regression: on a **tall** terminal the findings table can show
+/// many more rows than the PageDown step (8). The first attempt at
+/// fixing the "highlight stuck at row 8" bug used
+/// `FINDINGS_VIRTUAL_VIEWPORT = 8` everywhere, which fixed the
+/// small-terminal case but stopped the highlight at row 8 on
+/// tall terminals — the user observed "在 `findings` 没有到底之前
+/// `>>` 只能最多指到第8行". The current fix caches the real
+/// `area.height` after each render and uses it in the scroll
+/// formula, so the highlight walks through every visible row.
+///
+/// This test renders the app onto a 120×40 TestBackend (enough
+/// vertical room for ~23 data rows in the findings table), drives a
+/// sequence of Down presses, and asserts the highlight can reach
+/// row 15 — a position that's impossible if the formula is still
+/// hardcoded to viewport=8.
+#[test]
+fn findings_highlight_walks_every_visible_row_on_a_tall_terminal() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use runnerguard_core::ScanEvent;
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    for i in 0..60 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message for finding {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    app.state.current_page = PageId::Findings;
+
+    // First render — populates `AppState::findings_viewport_rows`
+    // from the actual layout chunk. With 120×40 the body splits
+    // 3/34/3 (header/body/footer), then Findings splits 26/8, so
+    // the table gets 26 rows of which 23 are visible data rows.
+    terminal
+        .draw(|frame| app.render(frame, frame.area()))
+        .expect("initial render");
+    let cached_viewport = app.state.findings_viewport_rows;
+    assert!(
+        cached_viewport > 8,
+        "a 120x40 terminal must expose more than 8 data rows; got \
+         {cached_viewport}",
+    );
+
+    // Walk past the old viewport=8 threshold. With the bug the
+    // highlight would freeze at row 8; with the fix it should keep
+    // moving down through every row in the cached viewport.
+    let target_row = cached_viewport.saturating_sub(1);
+    app.apply_action(Action::Move(MoveDirection::Home));
+    for _ in 0..target_row {
+        app.apply_action(Action::Move(MoveDirection::Down));
+    }
+    let sel = app.state.selections.finding_index;
+    let off = app.state.selections.finding_offset;
+    assert_eq!(
+        sel, target_row,
+        "Down presses must advance selection by one each time",
+    );
+    assert_eq!(
+        sel - off,
+        target_row,
+        "highlight must sit on row {target_row} (sel - offset); \
+         with the viewport=8 bug it would be stuck at 7",
+    );
+    assert!(
+        target_row >= 15,
+        "this test only catches the tall-terminal bug when the \
+         actual viewport is at least 15 rows; got {target_row}",
+    );
+}

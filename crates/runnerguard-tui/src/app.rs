@@ -24,6 +24,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+/// Virtual viewport the scroll formula uses as a last-resort
+/// fallback when no render has populated
+/// [`AppState::findings_viewport_rows`] yet (i.e. `0`). Matches the
+/// `±8` PageDown step in [`App::apply_move`] so that a `j` press
+/// before the first render still moves the offset by a sensible
+/// amount.
+///
+/// On any render where the cached viewport is non-zero the real
+/// `area.height` wins. Using *only* this constant as the steady-
+/// state value was the bug that pinned `>>` to row 8 on tall
+/// terminals: the user's visible area was wider than 8 rows, but
+/// the formula kept using 8, so the highlight walked 0..7 and then
+/// froze at row 8 forever.
+const FINDINGS_VIRTUAL_VIEWPORT: usize = 8;
+
 /// Where the App receives events from. Useful for testing — tests
 /// pass a `Vec<Event>` rather than polling stdin.
 pub enum EventSource {
@@ -399,21 +414,43 @@ impl App {
     }
 
     /// Adjust `selections.finding_offset` so `finding_index` lies
-    /// inside the visible window. The window is approximated by the
-    /// minimum data-row capacity of the findings table — the page
-    /// layout guarantees the table area gets at least 5 rows, and
-    /// borders (2) + header (1) consume 3 of those, leaving 2 data
-    /// rows at the smallest legal terminal height. Using this
-    /// minimum keeps the offset meaningful when no render has
-    /// happened yet; the render pass sharpens it against the actual
-    /// area.height.
+    /// inside the visible window **and** the highlight can move
+    /// through every visible row instead of being pinned to a few
+    /// of them.
+    ///
+    /// Earlier revisions of this function approximated the
+    /// viewport with a hardcoded constant. First it was the
+    /// page-layout minimum (`viewport = 2`), which pinned
+    /// `sel - offset = 1` forever and made `>>` glue to the second
+    /// visible row. The most recent attempt switched the constant
+    /// to the PageDown step (`8`), which fixed the small-terminal
+    /// case but stopped at row 8 on tall terminals — the user's
+    /// visible area was, say, 19 rows but the formula kept using
+    /// 8, so the highlight walked rows 0..7 and then froze.
+    ///
+    /// The current fix reads [`AppState::findings_viewport_rows`],
+    /// which [`App::render_body`] refreshes from the actual layout
+    /// chunk on every render. The highlight therefore walks
+    /// through every visible row on the user's actual terminal,
+    /// not a constant number. [`FINDINGS_VIRTUAL_VIEWPORT`] is
+    /// only used as a fallback when no render has happened yet.
     fn scroll_findings_offset_into_view(&mut self) {
         let n = self.state.visible_findings.len();
         if n == 0 {
             self.state.selections.finding_offset = 0;
             return;
         }
-        let viewport = self.findings_viewport_rows();
+        // Prefer the cached viewport from the most recent render;
+        // fall back to the PageDown step only when no render has
+        // populated the cache yet (typical for tests driving
+        // `apply_action` directly, or for the very first keypress
+        // before the first paint).
+        let cached = self.state.findings_viewport_rows;
+        let viewport = if cached > 0 {
+            cached
+        } else {
+            FINDINGS_VIRTUAL_VIEWPORT
+        };
         if viewport == 0 {
             return;
         }
@@ -430,18 +467,6 @@ impl App {
             offset = sel;
         }
         self.state.selections.finding_offset = offset;
-    }
-
-    /// Minimum number of data rows the findings table can show.
-    /// The findings page splits the body into `Min(5)` + `Length(8)`,
-    /// so the table area is always at least 5 rows tall. Borders
-    /// consume 2 of those and the table header consumes 1 more,
-    /// leaving 2 data rows as the worst-case minimum.
-    fn findings_viewport_rows(&self) -> usize {
-        // Use the documented page-layout minimum so this method is
-        // deterministic regardless of terminal size; the render
-        // pass re-clamps against the real `area.height`.
-        2
     }
 
     fn apply_other(&mut self, payload: String) {
@@ -516,6 +541,16 @@ impl App {
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Min(5), Constraint::Length(8)])
                     .split(area);
+                // Cache the actual data-row capacity of the findings
+                // table so `scroll_findings_offset_into_view` can walk
+                // the highlight through every visible row instead of
+                // pinning it to a fixed slot. Without this cache the
+                // scroll formula falls back to a constant — fine on
+                // a 5-row-min terminal but on taller terminals the
+                // highlight stops moving past row 8 even though the
+                // table actually shows more rows. Borders (2) +
+                // header (1) consume 3 rows off the chunk height.
+                self.state.findings_viewport_rows = (chunks[0].height as usize).saturating_sub(3);
                 // The detail pane is a read-only preview keyed off
                 // the highlighted row; the table owns the cursor.
                 FindingsTableComponent::render_for(frame, chunks[0], &self.state, body_focused);

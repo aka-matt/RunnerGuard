@@ -131,14 +131,19 @@ fn build_table_state(state: &AppState, area: Rect) -> TableState {
     // The widget subtracts its own header row internally, so the data
     // viewport is `area.height - 2 (borders) - 1 (header)`.
     let viewport = (area.height as usize).saturating_sub(3);
-    let max_offset = n.saturating_sub(1);
+    // The legal range for `offset` is `0..=(n - viewport)` — any
+    // larger offset would leave the bottom of the table empty. The
+    // previous `n.saturating_sub(1)` clamp let the offset sit past
+    // the end on tall terminals, producing blank rows.
+    let max_offset = n.saturating_sub(viewport);
     let mut offset = state.selections.finding_offset.min(max_offset);
     if viewport > 0 {
         let visible_end = offset.saturating_add(viewport);
         if let Some(sel) = selected {
             if sel >= visible_end {
                 // Selection fell below the visible window — scroll
-                // forward so the selection sits on the last visible row.
+                // forward so the selection sits on the last visible
+                // row.
                 offset = (sel + 1).saturating_sub(viewport).min(max_offset);
             } else if sel < offset {
                 // Selection scrolled above the window — scroll back
