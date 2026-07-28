@@ -30,19 +30,19 @@ impl FooterHelpComponent {
         } else {
             unfocused_block("Help")
         };
-        let page_hint = match state.current_page {
-            crate::component::PageId::ScanProgress => "p progress",
-            crate::component::PageId::Findings => "f findings",
-            crate::component::PageId::FindingDetail => "Enter detail",
-            crate::component::PageId::Flows => "g flows",
-            crate::component::PageId::Diagnostics => "d diagnostics",
-            crate::component::PageId::Report => "r rerun",
-        };
+        // Page navigation is the same on every page (`f`/`p`/`g`/`d`
+        // jump to Findings / ScanProgress / Flows / Diagnostics),
+        // so we list it once instead of swapping a single-key hint
+        // based on `current_page`. The previous per-page hint
+        // duplicated the same letter the user just saw; the new
+        // line keeps the shortcut table stable while the user
+        // navigates around.
         let mut lines = vec![Line::from(vec![
             Span::styled("Keys: ", Style::default().fg(Color::Yellow)),
-            Span::raw("q/Esc quit • Tab/Shift+Tab cycle • j/k move • "),
-            Span::styled(page_hint, Style::default().fg(Color::Cyan)),
-            Span::raw(" • / filter • ? help"),
+            Span::raw(
+                "q/Esc quit • Tab/Shift+Tab cycle • j/k move • \
+                 f/p/g/d pages • / filter • ? help",
+            ),
         ])];
         if !state.report_paths.is_empty() {
             lines.push(Line::from(vec![Span::styled(
