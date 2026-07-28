@@ -308,12 +308,27 @@ impl App {
             Action::PrevPanel => {
                 self.state.focused_panel = self.state.focused_panel.cycle(Cycle::Backward);
             }
-            Action::Page(page) => self.state.current_page = *page,
+            Action::Page(page) => {
+                self.state.current_page = *page;
+                // The user just asked to look at a different page —
+                // they're going to start interacting with the body
+                // (j/k on Findings, etc.). Cycle focus back to the
+                // body panel so the visible focus matches where the
+                // keymap routes key events; otherwise a leftover
+                // Header / Footer focus makes the global keymap the
+                // only thing left consuming keys and j/k fall on the
+                // floor.
+                self.state.focused_panel = PanelId::Body;
+            }
             Action::Move(dir) => self.apply_move(*dir),
             Action::Enter => {
                 if let PageId::Findings = self.state.current_page {
                     self.state.current_page = PageId::FindingDetail;
                 }
+                // Same reasoning as `Action::Page` — drilling into a
+                // finding is implicit navigation, so land focus on
+                // the body panel.
+                self.state.focused_panel = PanelId::Body;
             }
             Action::ClearFilter => {
                 self.state.filter = None;
@@ -340,11 +355,37 @@ impl App {
             return;
         }
         let cur = self.state.selections.finding_index;
+        // The page determines how far PageUp / PageDown jump. On the
+        // Findings table the user expects "上下翻页" to skip a
+        // screenful of rows at a time — the data view gets crowded
+        // fast and stepping by 1 is too tedious for long lists, so
+        // we step by 8 (the minimum data-row capacity of the
+        // Findings table). On FindingDetail (and every other body
+        // page — Flows, Diagnostics, Report) there's no long list to
+        // scroll; the user is reading one finding's detail at a
+        // time, and "上一条 / 下一条 issue" is what the keys must do,
+        // so we step by 1 and clamp. The two behaviours share the
+        // same selection state because FindingDetail re-renders off
+        // `highlighted_finding()`, so a Down on the detail page
+        // changes the visible body as a side effect.
+        let page = self.state.current_page;
         let next = match dir {
             MoveDirection::Up => cur.saturating_sub(1),
             MoveDirection::Down => (cur + 1).min(n - 1),
-            MoveDirection::PageUp => cur.saturating_sub(8),
-            MoveDirection::PageDown => (cur + 8).min(n - 1),
+            MoveDirection::PageUp => {
+                if page == PageId::Findings {
+                    cur.saturating_sub(8)
+                } else {
+                    cur.saturating_sub(1)
+                }
+            }
+            MoveDirection::PageDown => {
+                if page == PageId::Findings {
+                    (cur + 8).min(n - 1)
+                } else {
+                    (cur + 1).min(n - 1)
+                }
+            }
             MoveDirection::Home => 0,
             MoveDirection::End => n - 1,
         };
@@ -448,34 +489,49 @@ impl App {
     }
 
     fn render_body(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        // The body block title should light up only when the body
+        // panel actually owns focus. Previously this branch hardcoded
+        // `focused = true` for every page render, so when the user
+        // cycled focus to the Header or Footer with `Tab`, the
+        // Findings / Flows / Diagnostics block kept its cyan
+        // highlight while the Header or Footer title *also* lit up —
+        // two title bars looked focused at once. Worse, the visual
+        // still said "findings is focused" so the user pressed `j` /
+        // `k` / `PageDown`, only to discover the keys had been
+        // rerouted to `header.handle_event` (which returns `None`).
+        let body_focused = self.state.focused_panel == PanelId::Body;
         match self.state.current_page {
             PageId::ScanProgress => {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Length(7), Constraint::Min(3)])
                     .split(area);
+                // Project summary is a static read-out; the live
+                // event log is the focus target on this page.
                 ProjectSummaryComponent::render_for(frame, chunks[0], &self.state, false);
-                ProgressComponent::render_for(frame, chunks[1], &self.state, false);
+                ProgressComponent::render_for(frame, chunks[1], &self.state, body_focused);
             }
             PageId::Findings => {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Min(5), Constraint::Length(8)])
                     .split(area);
-                FindingsTableComponent::render_for(frame, chunks[0], &self.state, true);
+                // The detail pane is a read-only preview keyed off
+                // the highlighted row; the table owns the cursor.
+                FindingsTableComponent::render_for(frame, chunks[0], &self.state, body_focused);
                 FindingDetailComponent::render_for(frame, chunks[1], &self.state, false);
             }
             PageId::FindingDetail => {
-                FindingDetailComponent::render_for(frame, area, &self.state, true);
+                FindingDetailComponent::render_for(frame, area, &self.state, body_focused);
             }
             PageId::Flows => {
-                FlowTreeComponent::render_for(frame, area, &self.state, true);
+                FlowTreeComponent::render_for(frame, area, &self.state, body_focused);
             }
             PageId::Diagnostics => {
-                DiagnosticsComponent::render_for(frame, area, &self.state, true);
+                DiagnosticsComponent::render_for(frame, area, &self.state, body_focused);
             }
             PageId::Report => {
-                ReportPageComponent::render_for(frame, area, &self.state, true);
+                ReportPageComponent::render_for(frame, area, &self.state, body_focused);
             }
         }
     }

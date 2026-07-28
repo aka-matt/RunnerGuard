@@ -112,9 +112,25 @@ pub trait Component {
 /// Translate a raw crossterm event into our [`Event`] enum; unknown
 /// variant types become [`Event::Tick`] so the caller still has
 /// something to dispatch.
+///
+/// **`KeyEventKind::Release` events are dropped on purpose.**
+/// Crossterm 0.28 emits both `Press` and `Release` for a single
+/// physical key press when the host terminal has keyboard
+/// enhancement enabled (Windows Terminal, many xterm configs, and
+/// anything running over ConPTY). Treating `Release` like `Press`
+/// means a single tap fires two Move / Tab / Page actions — the
+/// user presses `j` once on the FindingDetail page and the
+/// selection advances by 2 issues, exactly the +2 bug reported in
+/// the previous turn. We collapse a Release to `Event::Tick` so
+/// the event loop still runs but no action is dispatched.
+///
+/// `KeyEventKind::Repeat` events are kept — a held key should still
+/// fire continuous Move actions so the user can long-scroll
+/// through long finding lists.
 #[must_use]
 pub fn from_crossterm(event: CtEvent) -> Event {
     match event {
+        CtEvent::Key(k) if k.kind == crossterm::event::KeyEventKind::Release => Event::Tick,
         CtEvent::Key(k) => Event::Key(k),
         CtEvent::Mouse(m) => Event::Mouse(m),
         CtEvent::Resize(w, h) => Event::Resize {

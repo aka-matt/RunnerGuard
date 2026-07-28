@@ -1,9 +1,10 @@
 //! Detail view for the highlighted finding.
 
-use crate::component::{Action, Component, Event};
+use crate::component::{Action, Component, Event, MoveDirection};
 use crate::error::TuiError;
 use crate::state::AppState;
 use crate::view::{focused_block, severity_label, severity_style, short_path, unfocused_block};
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -106,8 +107,27 @@ impl Component for FindingDetailComponent {
     fn init(&mut self) -> Result<(), TuiError> {
         Ok(())
     }
-    fn handle_event(&mut self, _event: &Event) -> Option<Action> {
-        None
+    fn handle_event(&mut self, event: &Event) -> Option<Action> {
+        // The detail view shares the global `selections.finding_index`
+        // with the Findings table, so accepting the same movement
+        // keys here lets the user flip through issues *without*
+        // bouncing back to the Findings page first. Movement is
+        // intentionally only ±1 issue on this page — the user is
+        // reading one finding at a time and "上一条 / 下一条" is the
+        // expected semantics for both Up/Down and PageUp/PageDown.
+        // See `App::apply_move` for the page-aware step size.
+        let Event::Key(key) = event else {
+            return None;
+        };
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::Move(MoveDirection::Down)),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::Move(MoveDirection::Up)),
+            KeyCode::PageDown => Some(Action::Move(MoveDirection::PageDown)),
+            KeyCode::PageUp => Some(Action::Move(MoveDirection::PageUp)),
+            KeyCode::Home => Some(Action::Move(MoveDirection::Home)),
+            KeyCode::End => Some(Action::Move(MoveDirection::End)),
+            _ => None,
+        }
     }
     fn update(&mut self, _action: &Action) -> Result<(), TuiError> {
         Ok(())

@@ -183,6 +183,437 @@ fn move_down_reaches_end_and_move_up_clamps() {
     assert_eq!(app.state.selections.finding_index, 0);
 }
 
+/// Regression: on the Findings *table* page, `PageUp` / `PageDown`
+/// step by 8 rows at a time. The Findings list grows large enough
+/// that ±1 navigation is tedious, so the keys behave like a
+/// screenful jump — same as the very first incarnation of the TUI.
+/// On every *other* body page (FindingDetail, Flows, Diagnostics,
+/// Report) the same keys step by 1 issue because the user is
+/// reading one item at a time and "上一条 / 下一条" is the only
+/// useful semantics. This test pins the Findings page contract.
+#[test]
+fn findings_page_page_keys_step_by_eight_rows() {
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    for i in 0..30 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    app.state.current_page = PageId::Findings;
+    let n = app.state.findings.len();
+    assert_eq!(n, 30);
+
+    // From the top, one PageDown must land on row 8 — not 1 (Down)
+    // and not 19 / 24 (the old "no-op alias" experiment). The 8-row
+    // step is the contract.
+    app.apply_action(Action::Move(MoveDirection::Home));
+    assert_eq!(app.state.selections.finding_index, 0);
+    app.apply_action(Action::Move(MoveDirection::PageDown));
+    assert_eq!(
+        app.state.selections.finding_index, 8,
+        "Findings page: PageDown must step 8 rows (got {})",
+        app.state.selections.finding_index
+    );
+
+    // Two more presses advance by another 16 — landing on row 24.
+    app.apply_action(Action::Move(MoveDirection::PageDown));
+    app.apply_action(Action::Move(MoveDirection::PageDown));
+    assert_eq!(
+        app.state.selections.finding_index, 24,
+        "Findings page: each PageDown must add 8 (got {})",
+        app.state.selections.finding_index
+    );
+
+    // PageDown above the list end clamps to n - 1.
+    app.apply_action(Action::Move(MoveDirection::PageDown));
+    assert_eq!(
+        app.state.selections.finding_index,
+        n - 1,
+        "Findings page: PageDown must clamp at the bottom"
+    );
+
+    // PageUp mirrors: from the clamped `n - 1` (= 29) row PageUp
+    // lands on 21 (= 29 - 8). The earlier count of "16" was a
+    // misread of the sequence — the third PageDown above had
+    // already clamped to the bottom, so the upward step starts
+    // from there, not from row 24.
+    app.apply_action(Action::Move(MoveDirection::PageUp));
+    assert_eq!(
+        app.state.selections.finding_index, 21,
+        "Findings page: PageUp must step 8 rows back (got {})",
+        app.state.selections.finding_index
+    );
+
+    // PageUp clamps at 0 — the user can spam the key without
+    // wrapping or panicking.
+    app.apply_action(Action::Move(MoveDirection::Home));
+    for _ in 0..3 {
+        app.apply_action(Action::Move(MoveDirection::PageUp));
+    }
+    assert_eq!(
+        app.state.selections.finding_index, 0,
+        "Findings page: PageUp must clamp at the top"
+    );
+}
+
+/// Regression: crossterm 0.28 fires both `KeyEventKind::Press` and
+/// `KeyEventKind::Release` for a single physical key tap when the
+/// host enables keyboard-enhancement mode (Windows Terminal, most
+/// ConPTY-based terminals, xterm with `modifyOtherKeys`, etc.).
+/// The previous `from_crossterm` forwarded both events into the
+/// dispatcher unchanged, so the user's press of `j` on the
+/// FindingDetail page advanced `finding_index` by 2 issues — the
+/// `Release` did an extra `Action::Move(Down)` after the `Press`
+/// already moved it. This test pins the contract: a Press + Release
+/// pair on the same key must advance the index by exactly 1 issue.
+#[test]
+fn key_release_event_does_not_advance_finding_index_a_second_time() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    let mut app = App::browsing(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        make_outcome(),
+    );
+    app.state.current_page = PageId::Findings;
+    app.apply_action(Action::Enter);
+    assert_eq!(app.state.current_page, PageId::FindingDetail);
+    assert_eq!(app.state.selections.finding_index, 0);
+
+    let press =
+        KeyEvent::new_with_kind(KeyCode::Char('j'), KeyModifiers::NONE, KeyEventKind::Press);
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(press)));
+    let after_press = app.state.selections.finding_index;
+    assert_eq!(
+        after_press, 1,
+        "Press of `j` must advance by exactly 1 (got {after_press})"
+    );
+
+    let release = KeyEvent::new_with_kind(
+        KeyCode::Char('j'),
+        KeyModifiers::NONE,
+        KeyEventKind::Release,
+    );
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(release)));
+    let after_release = app.state.selections.finding_index;
+    assert_eq!(
+        after_release, 1,
+        "Release of `j` must NOT advance a second time (got {after_release})"
+    );
+
+    // Belt-and-braces: a third physical tap (Press + Release) on
+    // the same key must advance by exactly 1 more issue, not 2.
+    let press =
+        KeyEvent::new_with_kind(KeyCode::Char('j'), KeyModifiers::NONE, KeyEventKind::Press);
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(press)));
+    let release = KeyEvent::new_with_kind(
+        KeyCode::Char('j'),
+        KeyModifiers::NONE,
+        KeyEventKind::Release,
+    );
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(release)));
+    assert_eq!(
+        app.state.selections.finding_index, 2,
+        "one more press+release pair must advance by exactly 1 (got {})",
+        app.state.selections.finding_index
+    );
+}
+
+/// Regression: on the FindingDetail page, `PageUp` / `PageDown`
+/// step by exactly one issue — "上一条 / 下一条 issue". This is the
+/// page-aware counterpart to `findings_page_page_keys_step_by_eight_rows`.
+/// Up / Down behave identically (±1); they're here for symmetry.
+#[test]
+fn finding_detail_page_page_keys_step_by_one_issue() {
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    for i in 0..20 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    // Reach the detail page via the same `Enter` key the user
+    // presses on the Findings page; this also exercises the focus-
+    // reset path.
+    app.state.current_page = PageId::Findings;
+    app.apply_action(Action::Enter);
+    assert_eq!(app.state.current_page, PageId::FindingDetail);
+    assert_eq!(app.state.focused_panel, runnerguard_tui::PanelId::Body);
+    let n = app.state.findings.len();
+    assert_eq!(n, 20);
+
+    app.apply_action(Action::Move(MoveDirection::Home));
+    assert_eq!(app.state.selections.finding_index, 0);
+
+    // PageDown on the detail page must move ±1, not ±8 — pressing
+    // it three times from row 0 must land on row 3, never row 24.
+    app.apply_action(Action::Move(MoveDirection::PageDown));
+    app.apply_action(Action::Move(MoveDirection::PageDown));
+    app.apply_action(Action::Move(MoveDirection::PageDown));
+    assert_eq!(
+        app.state.selections.finding_index, 3,
+        "FindingDetail: PageDown must step 1 row (got {})",
+        app.state.selections.finding_index
+    );
+
+    // Re-rendering the detail page must show the new finding's
+    // title — proving the page is reading `highlighted_finding()`
+    // off the updated selection rather than a snapshot.
+    let backend = ratatui::backend::TestBackend::new(120, 20);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| app.render(frame, frame.area()))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let body_text = buffer_text(&buf);
+    assert!(
+        body_text.contains("MULE-003"),
+        "after PageDown x3 on the detail page, MULE-003 must be the \
+         highlighted finding; full buffer was:\n{body_text}"
+    );
+
+    // Up mirrors Down.
+    app.apply_action(Action::Move(MoveDirection::PageUp));
+    app.apply_action(Action::Move(MoveDirection::PageUp));
+    assert_eq!(
+        app.state.selections.finding_index, 1,
+        "FindingDetail: PageUp must step 1 row back (got {})",
+        app.state.selections.finding_index
+    );
+
+    // Both endpoints clamp.
+    app.apply_action(Action::Move(MoveDirection::Home));
+    for _ in 0..5 {
+        app.apply_action(Action::Move(MoveDirection::PageUp));
+    }
+    assert_eq!(
+        app.state.selections.finding_index, 0,
+        "FindingDetail: PageUp must clamp at the top"
+    );
+    app.apply_action(Action::Move(MoveDirection::End));
+    for _ in 0..5 {
+        app.apply_action(Action::Move(MoveDirection::PageDown));
+    }
+    assert_eq!(
+        app.state.selections.finding_index,
+        n - 1,
+        "FindingDetail: PageDown must clamp at the bottom"
+    );
+
+    // Key parity: PageUp/Down and Up/Down behave identically on
+    // the detail page (a step is a step is a step).
+    app.apply_action(Action::Move(MoveDirection::Home));
+    app.apply_action(Action::Move(MoveDirection::Up));
+    let up_step = app.state.selections.finding_index;
+    app.apply_action(Action::Move(MoveDirection::Home));
+    app.apply_action(Action::Move(MoveDirection::PageUp));
+    let paged_step = app.state.selections.finding_index;
+    assert_eq!(
+        up_step, paged_step,
+        "FindingDetail: PageUp must equal Up (got {up_step} vs {paged_step})"
+    );
+}
+
+/// Regression: after cycling focus to the Header or Footer with
+/// `Tab`, the body block title must lose its focused highlight so
+/// exactly one panel (the actually-focused one) lights up at any
+/// time. Previously `render_body` hardcoded `focused = true` for
+/// every page render, so the Findings / Flows / Diagnostics block
+/// kept its cyan background regardless of where the focus actually
+/// was — the user saw two title bars highlighted at once and
+/// pressed `j`, only to discover the keys had been routed to the
+/// static Header / Footer.
+#[test]
+fn tab_cycles_focus_and_only_one_panel_highlights_at_a_time() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::style::Color;
+    let mut app = App::browsing(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        make_outcome(),
+    );
+    app.state.current_page = PageId::Findings;
+
+    // Walk every panel in turn. The default starting panel is
+    // `Body`; one `Tab` press cycles to `Footer`, then `Header`,
+    // then wraps back to `Body`, then `Footer` again.
+    let cycle = [
+        runnerguard_tui::PanelId::Footer,
+        runnerguard_tui::PanelId::Header,
+        runnerguard_tui::PanelId::Body,
+        runnerguard_tui::PanelId::Footer,
+    ];
+    for expected_panel in cycle {
+        let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        app.dispatch(from_crossterm(crossterm::event::Event::Key(key)));
+        assert_eq!(
+            app.state.focused_panel, expected_panel,
+            "Tab must cycle panels in order"
+        );
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| app.render(frame, frame.area()))
+            .expect("render must not panic while cycling focus");
+
+        // Count the cells whose background is the focused cyan.
+        // Exactly one block title per frame should light up cyan;
+        // earlier code lit the body title *every* frame, so the
+        // count was always ≥ 2 for the Findings page.
+        let buf = terminal.backend().buffer().clone();
+        let mut focused_cells = 0usize;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = &buf[(x, y)];
+                if cell.style().bg == Some(Color::Cyan) {
+                    focused_cells += 1;
+                }
+            }
+        }
+        // The block title is rendered as a single styled line; allow
+        // a small slack for any other cyan accents (e.g. the
+        // header's "RunnerGuard" span on the same row) but the
+        // property we care about is: the *body* block must NOT
+        // contribute additional focused cells when focus has moved
+        // away.
+        assert!(
+            focused_cells > 0,
+            "at least one focused cell must exist (panel = {expected_panel:?})"
+        );
+        // Findings block title lives on row 3 (header height 3).
+        // When Body is NOT focused, that row must not carry a
+        // cyan-background title.
+        if expected_panel != runnerguard_tui::PanelId::Body {
+            let findings_title_cell = &buf[(0, 3)];
+            assert_ne!(
+                findings_title_cell.style().bg,
+                Some(Color::Cyan),
+                "Findings block title must NOT be cyan when focus is \
+                 on {expected_panel:?}; this is the double-highlight bug."
+            );
+        }
+    }
+}
+
+/// Regression: with focus on Header or Footer, the body keymap
+/// must not move the finding selection. The bug looked like "j /
+/// k / PageDown don't work after pressing Tab" — the user-visible
+/// cue was the still-focused-looking Findings block, the actual
+/// cause was that Tab had rerouted the keys to a no-op handler.
+#[test]
+fn keys_routed_to_header_or_footer_do_not_move_finding_selection() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = App::browsing(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        make_outcome(),
+    );
+    app.state.current_page = PageId::Findings;
+    let baseline = app.state.selections.finding_index;
+
+    // Cycle once: Body → Footer.
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    ))));
+    assert_eq!(app.state.focused_panel, runnerguard_tui::PanelId::Footer);
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::NONE,
+    ))));
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(KeyEvent::new(
+        KeyCode::PageDown,
+        KeyModifiers::NONE,
+    ))));
+    assert_eq!(
+        app.state.selections.finding_index, baseline,
+        "j / PageDown on Footer must NOT advance the finding selection"
+    );
+
+    // Cycle once more: Footer → Header.
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    ))));
+    assert_eq!(app.state.focused_panel, runnerguard_tui::PanelId::Header);
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(KeyEvent::new(
+        KeyCode::Char('k'),
+        KeyModifiers::NONE,
+    ))));
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(KeyEvent::new(
+        KeyCode::PageUp,
+        KeyModifiers::NONE,
+    ))));
+    assert_eq!(
+        app.state.selections.finding_index, baseline,
+        "k / PageUp on Header must NOT advance the finding selection"
+    );
+
+    // Cycle back: Header → Body. `j` must now move the cursor — this
+    // is the half the user actually wanted.
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    ))));
+    assert_eq!(app.state.focused_panel, runnerguard_tui::PanelId::Body);
+    app.dispatch(from_crossterm(crossterm::event::Event::Key(KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::NONE,
+    ))));
+    assert_eq!(
+        app.state.selections.finding_index,
+        baseline + 1,
+        "j on Body must advance the finding selection"
+    );
+}
+
+/// Regression: pressing `f` / `g` / `d` (and `Enter` on the
+/// Findings page) navigates to a new page — focus must land on the
+/// Body panel so the user can immediately use `j`/`k`/`PageDown`.
+/// Previously the page change left `focused_panel` wherever it was,
+/// so a leftover Header / Footer focus silently disabled the body
+/// keymap.
+#[test]
+fn page_shortcut_resets_focus_to_body() {
+    let mut app = App::browsing(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        make_outcome(),
+    );
+    // Park focus somewhere inconvenient, then navigate.
+    app.state.focused_panel = runnerguard_tui::PanelId::Header;
+    app.apply_action(Action::Page(PageId::Findings));
+    assert_eq!(app.state.focused_panel, runnerguard_tui::PanelId::Body);
+
+    app.state.focused_panel = runnerguard_tui::PanelId::Footer;
+    app.apply_action(Action::Page(PageId::Flows));
+    assert_eq!(app.state.focused_panel, runnerguard_tui::PanelId::Body);
+
+    app.state.focused_panel = runnerguard_tui::PanelId::Header;
+    app.apply_action(Action::Page(PageId::Diagnostics));
+    assert_eq!(app.state.focused_panel, runnerguard_tui::PanelId::Body);
+
+    // Enter from Findings opens FindingDetail and also lands on Body.
+    app.state.current_page = PageId::Findings;
+    app.state.focused_panel = runnerguard_tui::PanelId::Footer;
+    app.apply_action(Action::Enter);
+    assert_eq!(app.state.current_page, PageId::FindingDetail);
+    assert_eq!(app.state.focused_panel, runnerguard_tui::PanelId::Body);
+}
+
 /// Regression: `--tui` and `--tui-live` both used to render the
 /// findings table with a fresh `TableState::default()` on every
 /// draw, which silently reset the scroll offset to 0. Pressing `j`

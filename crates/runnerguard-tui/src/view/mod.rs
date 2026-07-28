@@ -59,8 +59,8 @@ pub fn page_label(page: PageId) -> &'static str {
 pub fn page_help(page: PageId) -> Line<'static> {
     let text = match page {
         PageId::ScanProgress => "Tab next panel • Enter select • q quit",
-        PageId::Findings => "j/k move • / filter • Enter detail • q quit",
-        PageId::FindingDetail => "Tab back • q quit",
+        PageId::Findings => "j/k ±1 • PgUp/PgDn ±8 • / filter • Enter detail • q quit",
+        PageId::FindingDetail => "j/k • PgUp/PgDn prev/next issue • Esc back • q quit",
         PageId::Flows => "j/k move • Enter expand • q quit",
         PageId::Diagnostics => "j/k move • q quit",
         PageId::Report => "q quit",
