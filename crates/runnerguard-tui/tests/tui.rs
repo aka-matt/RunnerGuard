@@ -1590,3 +1590,148 @@ fn footer_renders_filter_prompt_in_filter_mode() {
         "footer prompt must include the draft + caret, got: {line_text:?}",
     );
 }
+
+/// Walk every page that maps onto an `f`/`p`/`g`/`d` shortcut and
+/// confirm only the matching letter is rendered in the active
+/// (cyan + bold) style. The inactive letters should stay in the
+/// dim grey style so the user can tell which shortcut jumps to
+/// the page they're currently on.
+///
+/// Pages without a direct shortcut (`FindingDetail`, `Report`)
+/// are also checked: every letter must be dim — nothing should
+/// claim to be active when no shortcut applies.
+#[test]
+fn footer_highlights_active_page_key_in_fpghd() {
+    use ratatui::style::{Color, Modifier};
+    let cases: &[(PageId, char)] = &[
+        (PageId::Findings, 'f'),
+        (PageId::ScanProgress, 'p'),
+        (PageId::Flows, 'g'),
+        (PageId::Diagnostics, 'd'),
+    ];
+    // The help line contains other single-letter `f` characters too
+    // ("Shift" in `Tab/Shift+Tab cycle` and `filter`), so we can't
+    // just match every `f`/`p`/`g`/`d` on the row. We only consider
+    // cells that lie inside the `f/p/g/d` segment — the cells that
+    // sit between two `/` separators (or, for the first and last
+    // letter of the segment, immediately after a space / slash and
+    // adjacent to another shortcut letter).
+    let is_in_segment = |buf: &ratatui::buffer::Buffer, x: u16, y: u16| -> bool {
+        let ch_at = |dx: i32| -> char {
+            let nx = x as i32 + dx;
+            if nx < 0 || nx >= buf.area.width as i32 {
+                '\0'
+            } else {
+                buf[(nx as u16, y)].symbol().chars().next().unwrap_or('\0')
+            }
+        };
+        // Pattern A: cell is `X` in `X/Y` — right neighbor is `/`
+        // and the cell after that is a shortcut letter.
+        ch_at(1) == '/' && matches!(ch_at(2), 'f' | 'p' | 'g' | 'd')
+            // Pattern B: cell is `X` in `/X` or `/X/Y` — left neighbor
+            // is `/` and the cell before that is a shortcut letter.
+            || ch_at(-1) == '/' && matches!(ch_at(-2), 'f' | 'p' | 'g' | 'd')
+    };
+    for &(page, active_letter) in cases {
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(
+            runnerguard_tui::EventSource::Test(Vec::new()),
+            runnerguard_tui::ScanSource::None,
+        );
+        app.state.current_page = page;
+        terminal
+            .draw(|frame| app.render(frame, frame.area()))
+            .expect("render footer with page highlight");
+        let buf = terminal.backend().buffer().clone();
+        // The footer is 3 rows at the bottom (top border + content
+        // + bottom border). The help line sits on the inner row.
+        let help_y = buf.area.height.saturating_sub(2);
+        // Walk only the four cells inside the `f/p/g/d` segment.
+        let mut active_styles = Vec::new();
+        let mut inactive_styles = Vec::new();
+        for x in 0..buf.area.width {
+            let cell = &buf[(x, help_y)];
+            let symbol = cell.symbol();
+            let ch = match symbol.chars().next() {
+                Some(c) if matches!(c, 'f' | 'p' | 'g' | 'd') && symbol.chars().count() == 1 => c,
+                _ => continue,
+            };
+            if !is_in_segment(&buf, x, help_y) {
+                continue;
+            }
+            let style = cell.style();
+            if ch == active_letter {
+                active_styles.push((x, ch, style));
+            } else {
+                inactive_styles.push((x, ch, style));
+            }
+        }
+        assert_eq!(
+            active_styles.len(),
+            1,
+            "expected exactly one active `{active_letter}` on {page:?}, found {active_styles:?}",
+        );
+        assert_eq!(
+            inactive_styles.len(),
+            3,
+            "expected three inactive f/p/g/d cells on {page:?}, found {inactive_styles:?}",
+        );
+        let (active_x, _, active_style) = active_styles[0];
+        assert_ne!(
+            active_style, inactive_styles[0].2,
+            "active `{active_letter}` at x={active_x} must be styled differently from the inactive f/p/g/d cells on {page:?}",
+        );
+        // Sanity: the active style should actually carry the cyan +
+        // bold treatment, otherwise the highlight has regressed to
+        // dim grey and the user has no visual cue.
+        assert_eq!(
+            active_style.fg,
+            Some(Color::Cyan),
+            "active `{active_letter}` should be cyan on {page:?}, got {:?}",
+            active_style.fg,
+        );
+        assert!(
+            active_style.add_modifier.contains(Modifier::BOLD),
+            "active `{active_letter}` should be bold on {page:?}, got {:?}",
+            active_style.add_modifier,
+        );
+    }
+    // Pages without a direct f/p/g/d shortcut: every letter in the
+    // segment must stay dim — there's no key to advertise as
+    // "current".
+    for page in [PageId::FindingDetail, PageId::Report] {
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(
+            runnerguard_tui::EventSource::Test(Vec::new()),
+            runnerguard_tui::ScanSource::None,
+        );
+        app.state.current_page = page;
+        terminal
+            .draw(|frame| app.render(frame, frame.area()))
+            .expect("render footer for non-shortcut page");
+        let buf = terminal.backend().buffer().clone();
+        let help_y = buf.area.height.saturating_sub(2);
+        let mut any_active = false;
+        for x in 0..buf.area.width {
+            let cell = &buf[(x, help_y)];
+            let symbol = cell.symbol();
+            let ch = match symbol.chars().next() {
+                Some(c) if matches!(c, 'f' | 'p' | 'g' | 'd') && symbol.chars().count() == 1 => c,
+                _ => continue,
+            };
+            if !is_in_segment(&buf, x, help_y) {
+                continue;
+            }
+            if cell.style().fg == Some(Color::Cyan) {
+                any_active = true;
+                eprintln!("unexpected cyan `{ch}` on {page:?} at x={x}");
+            }
+        }
+        assert!(
+            !any_active,
+            "{page:?} has no direct f/p/g/d shortcut — no letter should be highlighted",
+        );
+    }
+}

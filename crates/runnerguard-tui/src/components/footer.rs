@@ -1,7 +1,7 @@
 //! Footer — keybinding hint + report paths summary, or the
 //! filter-input bar while the user is editing a pattern.
 
-use crate::component::{Action, Component, Event};
+use crate::component::{Action, Component, Event, PageId};
 use crate::error::TuiError;
 use crate::state::AppState;
 use crate::view::{focused_block, unfocused_block};
@@ -37,12 +37,39 @@ impl FooterHelpComponent {
         // duplicated the same letter the user just saw; the new
         // line keeps the shortcut table stable while the user
         // navigates around.
+        //
+        // The letter corresponding to the page the user is currently
+        // on is painted in the same cyan as the focused block so the
+        // shortcut reads as "active right now" — useful when the
+        // current page can't be inferred from the title bar (e.g.
+        // FindingDetail and Report don't have a direct key). The
+        // inactive letters stay dim so the user can still scan the
+        // full table at a glance.
+        let active = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        let inactive = Style::default().fg(Color::DarkGray);
+        let (f_style, p_style, g_style, d_style) = match state.current_page {
+            PageId::Findings => (active, inactive, inactive, inactive),
+            PageId::ScanProgress => (inactive, active, inactive, inactive),
+            PageId::Flows => (inactive, inactive, active, inactive),
+            PageId::Diagnostics => (inactive, inactive, inactive, active),
+            // FindingDetail and Report have no direct `f/p/g/d` key,
+            // so leave every letter dim — there's nothing to
+            // advertise as "current".
+            PageId::FindingDetail | PageId::Report => (inactive, inactive, inactive, inactive),
+        };
         let mut lines = vec![Line::from(vec![
             Span::styled("Keys: ", Style::default().fg(Color::Yellow)),
-            Span::raw(
-                "q/Esc quit • Tab/Shift+Tab cycle • j/k move • \
-                 f/p/g/d pages • / filter • ? help",
-            ),
+            Span::raw("q/Esc quit • Tab/Shift+Tab cycle • j/k move • "),
+            Span::styled("f", f_style),
+            Span::styled("/", inactive),
+            Span::styled("p", p_style),
+            Span::styled("/", inactive),
+            Span::styled("g", g_style),
+            Span::styled("/", inactive),
+            Span::styled("d", d_style),
+            Span::raw(" pages • / filter • ? help"),
         ])];
         if !state.report_paths.is_empty() {
             lines.push(Line::from(vec![Span::styled(
