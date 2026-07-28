@@ -19,6 +19,13 @@ runnerguard-model = { path = "../../crates/runnerguard-model" }
 runnerguard-config = { path = "../../crates/runnerguard-config" }
 runnerguard-report = { path = "../../crates/runnerguard-report" }
 runnerguard-tui = { path = "../../crates/runnerguard-tui", optional = true }
+# AI support is feature-gated to keep the default build free of unused
+# HTTP / AI dependencies. Turning the `ai` feature on pulls in the
+# provider client (`runnerguard-http`) and the prompt + response crate
+# (`runnerguard-ai`); `runnerguard-core` exposes the same `ai` feature,
+# which is what activates `ScanService::with_ai_service`.
+runnerguard-ai = { path = "../../crates/runnerguard-ai", optional = true }
+runnerguard-http = { path = "../../crates/runnerguard-http", optional = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -30,4 +37,10 @@ tracing-subscriber = { workspace = true }
 
 [features]
 default = []
+# When enabled, the CLI can construct an `AiService` and pass it into
+# `ScanService::with_ai_service(...)`. Even with this feature on, AI
+# runs are still gated by `--ai optional` / `--ai required` *and*
+# `ai.enabled: true` in the on-disk YAML config — the cargo feature
+# only controls whether the binary has the wiring compiled in.
+ai = ["dep:runnerguard-ai", "dep:runnerguard-http", "runnerguard-core/ai"]
 tui = ["dep:runnerguard-tui"]

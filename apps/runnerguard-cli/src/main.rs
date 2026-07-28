@@ -16,10 +16,19 @@
 //! The last two are gated behind the `tui` cargo feature.
 
 use clap::Parser;
+#[cfg(feature = "ai")]
+use runnerguard_config::AppConfig;
 use runnerguard_core::{ProgressSink, ScanEvent, ScanService};
 use runnerguard_model::{AiMode, ReportFormat, ScanOutcome, ScanRequest, Severity};
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+// AI wiring is feature-gated so the default build stays free of the
+// `runnerguard-ai` and `runnerguard-http` dependencies. When the
+// `ai` feature is off, the CLI still compiles and runs, but the
+// AI pass is silently a no-op (the `_ -> None` arm in `main`).
+#[cfg(feature = "ai")]
+mod ai;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -136,6 +145,30 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let formats: Vec<ReportFormat> = cli.format.iter().copied().map(Into::into).collect();
 
+    // ── Config (loaded only when AI is enabled) ───────────────────
+    // The CLI doesn't yet read every `AppConfig` field — `--config`
+    // today only feeds `ai` and `network`. We delay the load until we
+    // know we'll consume it so the `app_config` binding isn't unused
+    // in builds without the `ai` feature.
+    #[cfg(feature = "ai")]
+    let app_config = match load_app_config(cli.config.as_deref()) {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("config error: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    #[cfg(not(feature = "ai"))]
+    if let Some(p) = cli.config.as_ref() {
+        // Surface `--config` being silently ignored in builds without
+        // the `ai` feature — user can at least see why their config
+        // didn't take effect.
+        tracing::info!(
+            "--config {} has no effect without `--features ai`",
+            p.display()
+        );
+    }
+
     let req = ScanRequest {
         project_dir: cli.project.clone(),
         rule_files: cli.rules.clone(),
@@ -148,16 +181,41 @@ fn main() -> ExitCode {
         rule_filter: Default::default(),
     };
 
+    // ── AI service (feature-gated) ────────────────────────────────
+    // The AI service is only constructed when:
+    //   * the `ai` cargo feature is compiled in, AND
+    //   * `--ai` is `optional` or `required`, AND
+    //   * the YAML config (`ai.enabled`, `network.offline`, key, …)
+    //     says it's runnable.
+    // `try_build` returns `Ok(None)` for deliberate skips (logged
+    // via `tracing::info!`) and `Err(...)` for hard failures; the
+    // latter are logged as warnings and the scan continues with the
+    // deterministic report — per the design contract "AI failure
+    // must never invalidate the deterministic report".
+    #[cfg(feature = "ai")]
+    let ai_service: Option<std::sync::Arc<runnerguard_ai::AiService>> = match req.ai_mode {
+        AiMode::Disabled => None,
+        AiMode::Optional | AiMode::Required => {
+            match crate::ai::try_build(&app_config.ai, &app_config.network) {
+                Ok(svc) => svc,
+                Err(err) => {
+                    tracing::warn!("AI service could not be built: {err:#}");
+                    None
+                }
+            }
+        }
+    };
+
     // ── TUI paths ────────────────────────────────────────────────
     // Branch before constructing the text/json sink so live mode can
     // stream events into the TUI's channel instead of stdout.
     #[cfg(feature = "tui")]
     {
         if cli.tui {
-            return run_tui_preloaded(&req);
+            return run_tui_preloaded(&req, ai_service_cloned(&ai_service));
         }
         if cli.tui_live {
-            return run_tui_live(&req);
+            return run_tui_live(&req, ai_service_cloned(&ai_service));
         }
     }
 
@@ -168,6 +226,30 @@ fn main() -> ExitCode {
         Box::new(CliTextSink)
     };
 
+    // Enter a current-thread tokio runtime for the duration of the
+    // scan so that any AI pass scheduled by `runnerguard-core` can
+    // locate a `tokio::runtime::Handle` via `Handle::try_current()`.
+    // The guard is dropped after `run_with_sink` returns.
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("failed to build tokio runtime: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    let _rt_guard = runtime.enter();
+
+    #[cfg(feature = "ai")]
+    let outcome = match ai_service {
+        Some(svc) => ScanService::new()
+            .with_ai_service(svc)
+            .run_with_sink(&req, sink.as_mut()),
+        None => ScanService::new().run_with_sink(&req, sink.as_mut()),
+    };
+    #[cfg(not(feature = "ai"))]
     let outcome = ScanService::new().run_with_sink(&req, sink.as_mut());
 
     let summary = outcome.result.summary();
@@ -181,6 +263,27 @@ fn main() -> ExitCode {
     }
 
     exit_code_for(&outcome)
+}
+
+/// Load `AppConfig` from `--config` (or fallback to defaults). Returns
+/// `Ok(defaults)` when the path is absent; surfaces parse errors as
+/// `anyhow::Error` so the CLI can exit 2 with a clear message.
+#[cfg(feature = "ai")]
+fn load_app_config(path: Option<&std::path::Path>) -> anyhow::Result<AppConfig> {
+    use runnerguard_config::loader;
+    let Some(p) = path else {
+        return Ok(AppConfig::default());
+    };
+    let loaded = loader::load_from_path(p)
+        .map_err(|e| anyhow::anyhow!("could not load config {}: {e}", p.display()))?;
+    Ok(loaded.config)
+}
+
+#[cfg(feature = "ai")]
+fn ai_service_cloned(
+    svc: &Option<std::sync::Arc<runnerguard_ai::AiService>>,
+) -> Option<std::sync::Arc<runnerguard_ai::AiService>> {
+    svc.as_ref().cloned()
 }
 
 /// Translate a finished [`ScanOutcome`] into the documented exit code.
@@ -236,11 +339,35 @@ fn init_tracing() {
 /// Run the scan silently into a [`NullSink`], then enter the TUI over
 /// the resulting [`ScanOutcome`]. Final exit code honours `--fail-on`.
 #[cfg(feature = "tui")]
-fn run_tui_preloaded(req: &ScanRequest) -> ExitCode {
+fn run_tui_preloaded(
+    req: &ScanRequest,
+    #[cfg(feature = "ai")] ai_service: Option<std::sync::Arc<runnerguard_ai::AiService>>,
+) -> ExitCode {
     use runnerguard_core::NullSink;
     use runnerguard_tui::{ScanSource, run_cli};
 
     let mut sink = NullSink;
+    // Enter a current-thread tokio runtime so the AI block in
+    // `runnerguard-core` can locate a handle for `block_on`.
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("failed to build tokio runtime: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    let _rt_guard = runtime.enter();
+    #[cfg(feature = "ai")]
+    let outcome = match ai_service {
+        Some(svc) => ScanService::new()
+            .with_ai_service(svc)
+            .run_with_sink(req, &mut sink),
+        None => ScanService::new().run_with_sink(req, &mut sink),
+    };
+    #[cfg(not(feature = "ai"))]
     let outcome = ScanService::new().run_with_sink(req, &mut sink);
     let threshold_exceeded = outcome.threshold_exceeded;
 
@@ -262,7 +389,10 @@ fn run_tui_preloaded(req: &ScanRequest) -> ExitCode {
 /// with 0 on clean quit and 4 only if the worker died (which the user
 /// would already see as a stuck UI).
 #[cfg(feature = "tui")]
-fn run_tui_live(req: &ScanRequest) -> ExitCode {
+fn run_tui_live(
+    req: &ScanRequest,
+    #[cfg(feature = "ai")] ai_service: Option<std::sync::Arc<runnerguard_ai::AiService>>,
+) -> ExitCode {
     use runnerguard_tui::{ScanSource, run_cli};
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ScanEvent>();
@@ -270,10 +400,42 @@ fn run_tui_live(req: &ScanRequest) -> ExitCode {
     let handle = match std::thread::Builder::new()
         .name("runnerguard-scan".to_string())
         .spawn(move || {
+            // Enter a current-thread tokio runtime so the AI block
+            // in `runnerguard-core` can locate a handle for
+            // `block_on`. The guard lives until the worker exits.
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(err) => {
+                    eprintln!("scan worker: failed to build tokio runtime: {err}");
+                    return;
+                }
+            };
+            let _rt_guard = runtime.enter();
             let mut sink = ChannelSink { tx };
             // Drop the sender when the scan returns so the TUI's
             // receiver can drain to completion.
-            ScanService::new().run_with_sink(&req_for_thread, &mut sink);
+            #[cfg(feature = "ai")]
+            let svc = ai_service;
+            #[cfg(feature = "ai")]
+            {
+                match svc {
+                    Some(s) => {
+                        let _ = ScanService::new()
+                            .with_ai_service(s)
+                            .run_with_sink(&req_for_thread, &mut sink);
+                    }
+                    None => {
+                        let _ = ScanService::new().run_with_sink(&req_for_thread, &mut sink);
+                    }
+                }
+            }
+            #[cfg(not(feature = "ai"))]
+            {
+                let _ = ScanService::new().run_with_sink(&req_for_thread, &mut sink);
+            }
         }) {
         Ok(h) => h,
         Err(e) => {

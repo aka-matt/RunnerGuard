@@ -1888,8 +1888,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "runnerguard-ai",
  "runnerguard-config",
  "runnerguard-core",
+ "runnerguard-http",
  "runnerguard-model",
  "runnerguard-report",
  "runnerguard-tui",
