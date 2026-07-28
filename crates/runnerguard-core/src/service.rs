@@ -154,8 +154,13 @@ impl ScanService {
             // findings Vec is moved into the accumulator.
             let mut by_rule: std::collections::HashMap<String, usize> =
                 std::collections::HashMap::new();
+            // Emit one `Finding` per finding. The TUI's live-mode event
+            // channel uses this to populate `state.findings`; the CLI
+            // text sink intentionally ignores it (it already prints
+            // per-rule counts via `RuleCompleted`).
             for f in &outcome.findings {
                 *by_rule.entry(f.rule_id.clone()).or_insert(0) += 1;
+                sink.emit(ScanEvent::Finding(f.clone()));
             }
             for f in outcome.findings {
                 findings.push(f);
@@ -212,7 +217,13 @@ impl ScanService {
                                                 d.clone(),
                                             ));
                                         }
-                                        result.findings.extend(res.findings);
+                                        result.findings.extend(res.findings.clone());
+                                        // Stream AI findings through the
+                                        // event channel too — live-mode TUIs
+                                        // would otherwise miss them.
+                                        for f in &res.findings {
+                                            sink.emit(ScanEvent::Finding(f.clone()));
+                                        }
                                     }
                                     Err(e) => {
                                         result.parser_diagnostics.push(Diagnostic::new(

@@ -183,6 +183,180 @@ fn move_down_reaches_end_and_move_up_clamps() {
     assert_eq!(app.state.selections.finding_index, 0);
 }
 
+/// Regression: `--tui` and `--tui-live` both used to render the
+/// findings table with a fresh `TableState::default()` on every
+/// draw, which silently reset the scroll offset to 0. Pressing `j`
+/// advanced the selection index correctly but the visible window
+/// never moved, so the user "couldn't page" through long finding
+/// lists — they only ever saw the first viewport of rows. The fix
+/// promotes a `finding_offset` onto `Selections` and clamps it
+/// against the actual viewport height on every render. This test
+/// builds 50 findings, scrolls to the end, and asserts the stored
+/// offset now reflects that the user has scrolled.
+#[test]
+fn findings_offset_advances_when_user_scrolls_past_viewport() {
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    // Push 50 findings via the same event-stream path `--tui-live`
+    // uses so the test exercises the live-mode code path too.
+    for i in 0..50 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message for finding {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    app.state.current_page = PageId::Findings;
+    assert_eq!(app.state.findings.len(), 50);
+
+    // Starting offset must be 0 — the user hasn't navigated yet.
+    assert_eq!(app.state.selections.finding_offset, 0);
+
+    // Jump to the last finding via `End`. With a tiny viewport (the
+    // `Min(5)` documented minimum) only two data rows fit, so the
+    // offset must move to keep the selection on screen.
+    app.apply_action(Action::Move(MoveDirection::End));
+    let n = app.state.findings.len();
+    assert_eq!(app.state.selections.finding_index, n - 1);
+    assert!(
+        app.state.selections.finding_offset > 0,
+        "End must scroll the offset forward when the selection is \
+         beyond the first viewport (was {})",
+        app.state.selections.finding_offset
+    );
+    let end_offset = app.state.selections.finding_offset;
+
+    // Going Home must reset the offset back to 0.
+    app.apply_action(Action::Move(MoveDirection::Home));
+    assert_eq!(app.state.selections.finding_index, 0);
+    assert_eq!(app.state.selections.finding_offset, 0);
+
+    // A series of Down presses past the viewport must also push the
+    // offset forward; the selection must always stay inside
+    // `[offset, offset + viewport)`.
+    for _ in 0..10 {
+        app.apply_action(Action::Move(MoveDirection::Down));
+    }
+    let sel = app.state.selections.finding_index;
+    let off = app.state.selections.finding_offset;
+    assert!(
+        sel >= off,
+        "selection ({sel}) must not be above the viewport (offset {off})"
+    );
+    // The rendered viewport on a TestBackend can vary; the only
+    // contract we can pin here is "offset <= selection".
+    assert!(
+        off <= sel,
+        "offset ({off}) must not exceed selection ({sel})"
+    );
+
+    // Filtering the list down to fewer rows must clamp the offset
+    // back into the legal range — otherwise the next render would
+    // dereference past the end of the now-shorter list.
+    app.state.apply_filter("MULE-000");
+    assert!(
+        app.state.selections.finding_offset < app.state.visible_findings.len(),
+        "filter must clamp finding_offset (got {}, vis len {})",
+        app.state.selections.finding_offset,
+        app.state.visible_findings.len()
+    );
+    app.state.clear_filter();
+    let _ = end_offset;
+}
+
+/// Regression: the findings table must actually render rows past
+/// the first viewport. Previously the offset silently reset to 0 on
+/// every draw, so pressing `End` then `Home` and re-rendering only
+/// ever showed rows 0..viewport. This test runs an end-to-end render
+/// on a 100x30 TestBackend and asserts that after scrolling to the
+/// end the buffer contains at least one rule-id from the *end* of
+/// the list — i.e. the table actually scrolled.
+#[test]
+fn findings_table_actually_renders_rows_past_the_first_viewport() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+    for i in 0..50 {
+        let mut f = Finding::deterministic(
+            format!("MULE-{i:03}"),
+            Severity::Warning,
+            format!("title #{i}"),
+            format!("message for finding {i}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+    app.state.current_page = PageId::Findings;
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| app.render(frame, frame.area()))
+        .unwrap();
+
+    // Initial render must NOT contain any rows past the first
+    // viewport (MULE-020 and beyond).
+    let buf_before = terminal.backend().buffer().clone();
+    let before_text = buffer_text(&buf_before);
+    assert!(
+        !before_text.contains("MULE-040"),
+        "initial render must not show row 40 yet"
+    );
+
+    // Jump to the end and re-render. The buffer must now contain at
+    // least one row from the end of the list (MULE-04x).
+    app.apply_action(Action::Move(MoveDirection::End));
+    terminal
+        .draw(|frame| app.render(frame, frame.area()))
+        .unwrap();
+    let buf_after = terminal.backend().buffer().clone();
+    let after_text = buffer_text(&buf_after);
+    let rendered_end_ids: Vec<&str> = ["MULE-040", "MULE-045", "MULE-049"]
+        .iter()
+        .copied()
+        .filter(|id| after_text.contains(id))
+        .collect();
+    assert!(
+        !rendered_end_ids.is_empty(),
+        "after End, the rendered buffer must contain a row from \
+         the end of the list; full buffer was:\n{after_text}"
+    );
+
+    // Jump back to the top — the first row must be visible again.
+    app.apply_action(Action::Move(MoveDirection::Home));
+    terminal
+        .draw(|frame| app.render(frame, frame.area()))
+        .unwrap();
+    let buf_top = terminal.backend().buffer().clone();
+    let top_text = buffer_text(&buf_top);
+    assert!(
+        top_text.contains("MULE-000"),
+        "after Home, the rendered buffer must contain the first \
+         finding again; full buffer was:\n{top_text}"
+    );
+}
+
+fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
+    let mut out = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            out.push_str(buf[(x, y)].symbol());
+        }
+        out.push('\n');
+    }
+    out
+}
+
 #[test]
 fn enter_opens_finding_detail_page() {
     let mut app = App::browsing(
@@ -273,6 +447,15 @@ fn scanner_event_progression_updates_state() {
         rule_id: "MULE-001".to_string(),
         findings: 1,
     });
+    // The `Finding` event is what increments `finding_count` in the
+    // live event stream; `RuleCompleted` no longer touches the counter.
+    app.state
+        .apply_event(ScanEvent::Finding(Finding::deterministic(
+            "MULE-001",
+            Severity::Warning,
+            "demo",
+            "demo",
+        )));
     app.state.apply_event(ScanEvent::ReportWritten {
         format: ReportFormat::Markdown,
         path: "./out/report.md".to_string(),
@@ -444,4 +627,47 @@ fn config_loaded_event_is_recorded() {
         app.state.config_path.as_deref(),
         Some(std::path::Path::new("/tmp/runnerguard.yaml"))
     );
+}
+
+#[test]
+fn finding_events_accumulate_into_live_state() {
+    // Regression: `--tui-live` mode (which uses `ScanSource::Channel`)
+    // does not receive a `ScanOutcome` directly — only events. Before
+    // the `ScanEvent::Finding` variant existed, draining the channel
+    // left `state.findings` permanently empty and the findings page
+    // rendered "no finding selected". This test pins the contract:
+    // pumping Finding events through `apply_event` populates the
+    // authoritative `findings` list and the filtered `visible_findings`
+    // mirror exactly.
+    use runnerguard_core::ScanEvent;
+    let mut app = App::new(
+        runnerguard_tui::EventSource::Test(Vec::new()),
+        runnerguard_tui::ScanSource::None,
+    );
+
+    for (idx, rid) in ["MULE-001", "MULE-002", "MULE-003"].iter().enumerate() {
+        let mut f = Finding::deterministic(
+            rid.to_string(),
+            Severity::Warning,
+            "title",
+            format!("message {idx}"),
+        );
+        f.origin = FindingOrigin::DeterministicRule;
+        app.state.apply_event(ScanEvent::Finding(f));
+    }
+
+    // Authoritative list has all three.
+    assert_eq!(app.state.findings.len(), 3);
+    // Without an active filter, visible == findings.
+    assert_eq!(app.state.visible_findings.len(), 3);
+    assert_eq!(app.state.progress.finding_count, 3);
+
+    // Drain a Synthetic Finished event — `apply_event` should leave the
+    // populated state alone (no clearing).
+    let mut summary = runnerguard_model::ScanSummary::default();
+    summary.findings_total = 3;
+    app.state.apply_event(ScanEvent::Finished { summary });
+    assert_eq!(app.state.findings.len(), 3);
+    assert_eq!(app.state.visible_findings.len(), 3);
+    assert!(!app.state.running, "Finished event must clear `running`");
 }

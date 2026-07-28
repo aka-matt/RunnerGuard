@@ -71,6 +71,7 @@ fn end_to_end_scan_emits_started_and_finished() {
             ScanEvent::XmlParsed { .. } => "parsed",
             ScanEvent::FlowArtifactWritten { .. } => "artifact",
             ScanEvent::RuleStarted { .. } => "rule_started",
+            ScanEvent::Finding { .. } => "finding",
             ScanEvent::RuleCompleted { .. } => "rule_completed",
             ScanEvent::AiStarted => "ai_started",
             ScanEvent::AiCompleted { .. } => "ai_completed",

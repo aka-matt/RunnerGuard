@@ -104,12 +104,32 @@ impl Cycle {
 }
 
 /// Per-component selections.
+///
+/// Each list-style panel tracks both the currently-selected row and
+/// the scroll offset of its first visible row. The two are kept in
+/// sync by [`App::apply_move`](crate::app::App::apply_move) — the
+/// selection moves under the user's finger, and the offset is
+/// adjusted so the selection stays inside the viewport. Storing both
+/// on the `AppState` instead of inside the ratatui widget means the
+/// scroll position survives every render (previously each component
+/// built a fresh `TableState::default()` on every frame, dropping
+/// the offset the widget had silently adjusted the previous frame).
 #[derive(Debug, Default, Clone)]
 pub struct Selections {
     pub finding_index: usize,
+    /// Scroll offset of the findings table — the index of the first
+    /// visible row. Adjusted by [`crate::app::App::apply_move`] so
+    /// the highlighted row always lies inside the viewport.
+    pub finding_offset: usize,
     pub flow_index: usize,
+    /// Scroll offset of the flow tree.
+    pub flow_offset: usize,
     pub diagnostic_index: usize,
+    /// Scroll offset of the diagnostics list.
+    pub diagnostic_offset: usize,
     pub report_index: usize,
+    /// Scroll offset of the report page.
+    pub report_offset: usize,
 }
 
 impl AppState {
@@ -145,12 +165,29 @@ impl AppState {
             ScanEvent::RuleStarted { .. } => {
                 self.progress.stage = Stage::Rules;
             }
-            ScanEvent::RuleCompleted {
-                rule_id: _,
-                findings,
-            } => {
+            ScanEvent::Finding(finding) => {
+                // Live-mode (`--tui-live`) only has the event stream —
+                // the `ScanOutcome` is not handed to the App directly.
+                // We push each finding into the authoritative list and
+                // refresh the filter view so the user sees results as
+                // they arrive.
+                self.findings.push(finding);
+                self.progress.finding_count = self.findings.len();
+                self.recompute_visible();
+                // Keep the cursor on the most recent finding when a
+                // filter is active; otherwise let the user explore.
+                if self.filter.is_some() && !self.visible_findings.is_empty() {
+                    self.selections.finding_index = self.visible_findings.len() - 1;
+                }
+            }
+            ScanEvent::RuleCompleted { rule_id, findings } => {
                 self.progress.rules_completed += 1;
-                self.progress.finding_count += findings;
+                // `finding_count` is owned by the `Finding` event path
+                // for live mode and by `set_findings` for preloaded
+                // mode; only the bare CLI text path relies on this
+                // counter being incremented. Do not double-count here.
+                self.progress.last_event =
+                    Some(format!("rule {rule_id} produced {findings} finding(s)"));
             }
             ScanEvent::AiStarted => {
                 self.progress.stage = Stage::Ai;
@@ -209,6 +246,13 @@ impl AppState {
         if self.selections.finding_index >= self.visible_findings.len() {
             self.selections.finding_index = self.visible_findings.len().saturating_sub(1);
         }
+        // Clamp the scroll offset into the same range so the next
+        // render doesn't dereference past the end of the now-shorter
+        // list — that was the secondary symptom of the same offset
+        // bug as the "can only see one issue" complaint.
+        if self.selections.finding_offset >= self.visible_findings.len() {
+            self.selections.finding_offset = self.visible_findings.len().saturating_sub(1);
+        }
         before != self.visible_findings.len()
     }
 
@@ -263,6 +307,7 @@ fn event_summary(event: &ScanEvent) -> String {
             format!("artifact {flow_id}: {path}")
         }
         ScanEvent::RuleStarted { rule_id } => format!("rule start: {rule_id}"),
+        ScanEvent::Finding(f) => format!("finding: {} ({})", f.rule_id, f.severity.as_str()),
         ScanEvent::RuleCompleted { rule_id, findings } => {
             format!("rule {rule_id} => {findings} finding(s)")
         }

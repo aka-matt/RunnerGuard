@@ -349,6 +349,58 @@ impl App {
             MoveDirection::End => n - 1,
         };
         self.state.selections.finding_index = next;
+        // Scroll the stored offset forward so the new selection sits
+        // inside the visible window. The render pass re-reconciles
+        // with the actual viewport size; this early adjustment is
+        // what makes `End` from the top immediately show the bottom
+        // row instead of waiting for the next redraw.
+        self.scroll_findings_offset_into_view();
+    }
+
+    /// Adjust `selections.finding_offset` so `finding_index` lies
+    /// inside the visible window. The window is approximated by the
+    /// minimum data-row capacity of the findings table — the page
+    /// layout guarantees the table area gets at least 5 rows, and
+    /// borders (2) + header (1) consume 3 of those, leaving 2 data
+    /// rows at the smallest legal terminal height. Using this
+    /// minimum keeps the offset meaningful when no render has
+    /// happened yet; the render pass sharpens it against the actual
+    /// area.height.
+    fn scroll_findings_offset_into_view(&mut self) {
+        let n = self.state.visible_findings.len();
+        if n == 0 {
+            self.state.selections.finding_offset = 0;
+            return;
+        }
+        let viewport = self.findings_viewport_rows();
+        if viewport == 0 {
+            return;
+        }
+        let sel = self.state.selections.finding_index;
+        let max_offset = n.saturating_sub(viewport);
+        let mut offset = self.state.selections.finding_offset.min(max_offset);
+        if sel >= offset + viewport {
+            // Selection fell off the bottom — push the window
+            // forward so the selection sits on the last visible row.
+            offset = (sel + 1).saturating_sub(viewport).min(max_offset);
+        } else if sel < offset {
+            // Selection scrolled above the top — drag the window
+            // back to it.
+            offset = sel;
+        }
+        self.state.selections.finding_offset = offset;
+    }
+
+    /// Minimum number of data rows the findings table can show.
+    /// The findings page splits the body into `Min(5)` + `Length(8)`,
+    /// so the table area is always at least 5 rows tall. Borders
+    /// consume 2 of those and the table header consumes 1 more,
+    /// leaving 2 data rows as the worst-case minimum.
+    fn findings_viewport_rows(&self) -> usize {
+        // Use the documented page-layout minimum so this method is
+        // deterministic regardless of terminal size; the render
+        // pass re-clamps against the real `area.height`.
+        2
     }
 
     fn apply_other(&mut self, payload: String) {

@@ -346,6 +346,13 @@ impl ProgressSink for CliTextSink {
             ScanEvent::RuleStarted { rule_id } => {
                 println!("  • evaluating {rule_id}");
             }
+            ScanEvent::Finding(_) => {
+                // Findings are emitted one-per-finding as the rule
+                // engine produces them. The CLI text sink reports
+                // them per-rule via `RuleCompleted { findings }`; we
+                // suppress a per-finding line so the existing summary
+                // output shape doesn't change.
+            }
             ScanEvent::RuleCompleted { rule_id, findings } => {
                 if findings > 0 {
                     println!("  ✗ {rule_id}: {findings} finding(s)");

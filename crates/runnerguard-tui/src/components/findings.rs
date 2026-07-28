@@ -85,13 +85,7 @@ impl FindingsTableComponent {
             ratatui::layout::Constraint::Length(28),
             ratatui::layout::Constraint::Min(10),
         ];
-        let mut table_state = TableState::default();
-        let selected = if state.visible_findings.is_empty() {
-            None
-        } else {
-            Some(state.selections.finding_index)
-        };
-        table_state.select(selected);
+        let mut table_state = build_table_state(state, area);
         let widget = Table::new(rows, widths)
             .header(header)
             .block(block)
@@ -103,6 +97,59 @@ impl FindingsTableComponent {
             .highlight_symbol(">> ");
         frame.render_stateful_widget(widget, area, &mut table_state);
     }
+}
+
+/// Build a `TableState` that scrolls to the row whose index is in
+/// `state.selections.finding_index`.
+///
+/// `TableState::select()` only mutates the `selected` field — it does
+/// NOT touch `offset`. If we just did `TableState::default()` +
+/// `select(idx)` on every render, the offset would stay at 0 and the
+/// user would see the first viewport of rows even after pressing `End`.
+/// The widget's render code does silently correct the offset to keep
+/// the selection in view, but the *next* render would construct a
+/// fresh `TableState` again and the cycle would repeat — visible
+/// flicker, and on very small viewports the correction logic can fail
+/// to find a valid offset entirely.
+///
+/// This function takes the stored offset (`selections.finding_offset`)
+/// as a starting point, clamps it against the actual viewport height,
+/// and adjusts it so the selected row is inside the visible window.
+/// The widget then renders from that offset without needing to second-
+/// guess the user's scroll position.
+fn build_table_state(state: &AppState, area: Rect) -> TableState {
+    let n = state.visible_findings.len();
+    let selected = if n == 0 {
+        None
+    } else {
+        Some(state.selections.finding_index.min(n - 1))
+    };
+    if n == 0 {
+        return TableState::default();
+    }
+    // `area` is the *outer* table area including the block's borders.
+    // The widget subtracts its own header row internally, so the data
+    // viewport is `area.height - 2 (borders) - 1 (header)`.
+    let viewport = (area.height as usize).saturating_sub(3);
+    let max_offset = n.saturating_sub(1);
+    let mut offset = state.selections.finding_offset.min(max_offset);
+    if viewport > 0 {
+        let visible_end = offset.saturating_add(viewport);
+        if let Some(sel) = selected {
+            if sel >= visible_end {
+                // Selection fell below the visible window — scroll
+                // forward so the selection sits on the last visible row.
+                offset = (sel + 1).saturating_sub(viewport).min(max_offset);
+            } else if sel < offset {
+                // Selection scrolled above the window — scroll back
+                // to it.
+                offset = sel;
+            }
+        }
+    }
+    TableState::default()
+        .with_offset(offset)
+        .with_selected(selected)
 }
 
 fn cell(text: &str) -> Span<'static> {

@@ -4,25 +4,60 @@
 //! way core talks to the outside world during a scan — no `println!`,
 //! no terminal escapes, no log macros that depend on terminal state.
 
-use runnerguard_model::{Diagnostic, ReportFormat, ScanSummary};
+use runnerguard_model::{Diagnostic, Finding, ReportFormat, ScanSummary};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind")]
 pub enum ScanEvent {
-    Started { project: String },
-    ConfigLoaded { config_path: String },
-    FileDiscovered { path: String },
-    RulesLoaded { rule_count: usize },
-    XmlParsed { path: String, flows: usize },
-    FlowArtifactWritten { flow_id: String, path: String },
-    RuleStarted { rule_id: String },
-    RuleCompleted { rule_id: String, findings: usize },
+    Started {
+        project: String,
+    },
+    ConfigLoaded {
+        config_path: String,
+    },
+    FileDiscovered {
+        path: String,
+    },
+    RulesLoaded {
+        rule_count: usize,
+    },
+    XmlParsed {
+        path: String,
+        flows: usize,
+    },
+    FlowArtifactWritten {
+        flow_id: String,
+        path: String,
+    },
+    RuleStarted {
+        rule_id: String,
+    },
+    /// One emitted per Finding that the rule engine produces. The TUI
+    /// uses these to populate `state.findings` in `--tui-live` mode;
+    /// the CLI text sink prints a one-line summary; the JSON sink
+    /// streams them directly. Without this variant the live TUI sees
+    /// only `RuleCompleted { findings: usize }` counts and ends up
+    /// with an empty findings panel.
+    Finding(Finding),
+    RuleCompleted {
+        rule_id: String,
+        findings: usize,
+    },
     AiStarted,
-    AiCompleted { findings: usize },
-    ReportWritten { format: ReportFormat, path: String },
-    Warning { diagnostic: Diagnostic },
-    Finished { summary: ScanSummary },
+    AiCompleted {
+        findings: usize,
+    },
+    ReportWritten {
+        format: ReportFormat,
+        path: String,
+    },
+    Warning {
+        diagnostic: Diagnostic,
+    },
+    Finished {
+        summary: ScanSummary,
+    },
 }
 
 /// Anything that can receive scan events. The CLI sink writes text, the

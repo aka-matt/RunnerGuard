@@ -55,19 +55,43 @@ impl FlowTreeComponent {
             .block(block)
             .highlight_style(Style::default().bg(Color::DarkGray))
             .highlight_symbol(">> ");
-        let mut list_state = ListState::default();
-        if !state.artifact_paths.is_empty() {
-            list_state.select(Some(
-                state
-                    .selections
-                    .flow_index
-                    .min(state.artifact_paths.len() - 1),
-            ));
-        }
+        let mut list_state = build_list_state(state, area);
         frame.render_stateful_widget(list, area, &mut list_state);
         // Keep the line var alive for clarity in the helper:
         let _ = lines;
     }
+}
+
+/// Build a `ListState` that scrolls to keep `selections.flow_index`
+/// in the visible window. See `findings::build_table_state` for the
+/// rationale — without explicit offset tracking the user can only see
+/// the first viewport of rows.
+fn build_list_state(state: &AppState, area: Rect) -> ListState {
+    let n = state.artifact_paths.len();
+    let selected = if n == 0 {
+        None
+    } else {
+        Some(state.selections.flow_index.min(n - 1))
+    };
+    if n == 0 {
+        return ListState::default();
+    }
+    let viewport = (area.height as usize).saturating_sub(2);
+    let max_offset = n.saturating_sub(1);
+    let mut offset = state.selections.flow_offset.min(max_offset);
+    if viewport > 0 {
+        let visible_end = offset.saturating_add(viewport);
+        if let Some(sel) = selected {
+            if sel >= visible_end {
+                offset = (sel + 1).saturating_sub(viewport).min(max_offset);
+            } else if sel < offset {
+                offset = sel;
+            }
+        }
+    }
+    ListState::default()
+        .with_offset(offset)
+        .with_selected(selected)
 }
 
 impl Component for FlowTreeComponent {

@@ -1,0 +1,184 @@
+{
+  "schema_version": "1.0",
+  "id": "flow:order-api-flow",
+  "project_id": "",
+  "kind": "flow",
+  "name": "order-api-flow",
+  "source": {
+    "file": "src/main/mule/order-api.xml",
+    "start_line": 10,
+    "start_column": 120,
+    "end_line": 10,
+    "end_column": 120
+  },
+  "namespaces": {},
+  "attributes": {
+    "name": "order-api-flow"
+  },
+  "components": [
+    {
+      "id": "component:0002",
+      "qualified_name": "flow",
+      "local_name": "flow",
+      "namespace_uri": null,
+      "attributes": {
+        "name": "order-api-flow"
+      },
+      "cdata": [],
+      "children": [
+        {
+          "id": "component:0003",
+          "qualified_name": "http:listener",
+          "local_name": "listener",
+          "namespace_uri": null,
+          "attributes": {
+            "config-ref": "order-api-listener-config",
+            "path": "/orders"
+          },
+          "cdata": [],
+          "children": [],
+          "source": {
+            "file": "src/main/mule/order-api.xml",
+            "start_line": 12,
+            "start_column": 33,
+            "end_line": 12,
+            "end_column": 33
+          }
+        },
+        {
+          "id": "component:0004",
+          "qualified_name": "logger",
+          "local_name": "logger",
+          "namespace_uri": null,
+          "attributes": {
+            "level": "INFO",
+            "message": "Received order request"
+          },
+          "cdata": [],
+          "children": [],
+          "source": {
+            "file": "src/main/mule/order-api.xml",
+            "start_line": 13,
+            "start_column": 80,
+            "end_line": 13,
+            "end_column": 80
+          }
+        },
+        {
+          "id": "component:0005",
+          "qualified_name": "flow-ref",
+          "local_name": "flow-ref",
+          "namespace_uri": null,
+          "attributes": {
+            "name": "validate-order-subflow"
+          },
+          "cdata": [],
+          "children": [],
+          "source": {
+            "file": "src/main/mule/order-api.xml",
+            "start_line": 14,
+            "start_column": 65,
+            "end_line": 14,
+            "end_column": 65
+          }
+        },
+        {
+          "id": "component:0006",
+          "qualified_name": "ee:transform",
+          "local_name": "transform",
+          "namespace_uri": null,
+          "attributes": {},
+          "cdata": [],
+          "children": [
+            {
+              "id": "component:0007",
+              "qualified_name": "ee:message",
+              "local_name": "message",
+              "namespace_uri": null,
+              "attributes": {},
+              "cdata": [],
+              "children": [
+                {
+                  "id": "component:0008",
+                  "qualified_name": "ee:set-payload",
+                  "local_name": "set-payload",
+                  "namespace_uri": null,
+                  "attributes": {},
+                  "cdata": [
+                    "%dw 2.0\noutput application/json\n---\n{ status: \"ok\" }"
+                  ],
+                  "children": [],
+                  "source": {
+                    "file": "src/main/mule/order-api.xml",
+                    "start_line": 17,
+                    "start_column": 25,
+                    "end_line": 17,
+                    "end_column": 25
+                  }
+                }
+              ],
+              "source": {
+                "file": "src/main/mule/order-api.xml",
+                "start_line": 16,
+                "start_column": 23,
+                "end_line": 16,
+                "end_column": 23
+              }
+            }
+          ],
+          "source": {
+            "file": "src/main/mule/order-api.xml",
+            "start_line": 15,
+            "start_column": 51,
+            "end_line": 15,
+            "end_column": 51
+          }
+        }
+      ],
+      "source": {
+        "file": "src/main/mule/order-api.xml",
+        "start_line": 10,
+        "start_column": 120,
+        "end_line": 10,
+        "end_column": 120
+      }
+    }
+  ],
+  "facts": {
+    "component_count": 7,
+    "max_component_depth": 4,
+    "flow_refs": [
+      {
+        "target": "validate-order-subflow",
+        "resolved": true,
+        "source": {
+          "file": "src/main/mule/order-api.xml",
+          "start_line": 14,
+          "start_column": 65,
+          "end_line": 14,
+          "end_column": 65
+        }
+      }
+    ],
+    "property_refs": [],
+    "dataweave_blocks": [
+      {
+        "language": "dataweave",
+        "version": "2.0",
+        "content_hash": "sha256:26c7eb315bf3d2799710cb274e024e42fe068fda19a8f6246f3a6e8d1f68dfba",
+        "content": "%dw 2.0\noutput application/json\n---\n{ status: \"ok\" }",
+        "source": {
+          "file": "src/main/mule/order-api.xml",
+          "start_line": 17,
+          "start_column": 25,
+          "end_line": 17,
+          "end_column": 25
+        }
+      }
+    ],
+    "has_local_error_handler": false,
+    "has_effective_error_handler": false,
+    "source_component": "http:listener"
+  },
+  "source_xml_sha256": "sha256:ee01f9694b6fa76482fba302df7e867c9c42e31d3faed1d5beaa52c46155ee71"
+}
